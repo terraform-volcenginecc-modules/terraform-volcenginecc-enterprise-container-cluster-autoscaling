@@ -75,6 +75,7 @@ CoreDNS 和 metrics-server 由模板内的 `terraform_data + local-exec + Python
 .
 ├── main.tf / locals.tf / variables.tf / outputs.tf
 ├── providers.tf / versions.tf / terraform.tfvars
+├── preflight.tf / PREFLIGHT.md
 ├── .gitignore
 ├── modules/
 │   ├── network/
@@ -84,6 +85,7 @@ CoreDNS 和 metrics-server 由模板内的 `terraform_data + local-exec + Python
 │   └── alb/
 ├── scripts/
 │   ├── preflight.py
+│   ├── apply-checked.py
 │   ├── reconcile-required-addons.py
 │   ├── bootstrap-dns.py
 │   └── prepare-destroy.py
@@ -94,7 +96,7 @@ CoreDNS 和 metrics-server 由模板内的 `terraform_data + local-exec + Python
 └── README.md / README.zh-CN.md
 ```
 
-每个子模块包含 `main.tf`、`variables.tf`、`outputs.tf`、`versions.tf`。Provider 在根模块配置；模块之间通过输出建立网络、集群、节点池和插件的依赖。主要资源统一使用 Name、Environment、Project、Owner、CostCenter 标签，附加标签不能覆盖这些基础字段。
+每个子模块包含 `main.tf`、`variables.tf`、`outputs.tf`、`versions.tf`。Provider 在根模块配置；模块之间通过输出建立网络、集群、节点池和插件的依赖。资源标签完全来自 `tags`，默认为 `{}`，模板不会自动添加 Name、Environment、Project、Owner、CostCenter。`project_name` 仍用于实际云项目归属。
 
 ### 3.3 核心代码示例
 
@@ -140,7 +142,7 @@ InfraManager 是火山引擎的 Terraform 托管工作台，参见 [InfraManager
 
 执行身份需要 CloudControl，以及这些资源的创建、读取、更新、删除、标签和关联权限。组件协调器另外调用 VKE `ListClusters`、`ListSupportedAddons`、`ListAddons`、`CreateAddon`。准备目标地域已有的 ECS SSH 密钥对，只输入名称，不提供私钥。
 
-**平台执行器需要 `/bin/sh`、Python 3、VKE HTTPS API 访问及可被子进程继承的部署凭据**。组件协调脚本在 Terraform Apply 的执行环境中运行；临时身份还需传递 `VOLCENGINE_SESSION_TOKEN`。凭据由平台部署身份提供，不写入模板参数文件。
+**平台执行器需要 `/bin/sh`、Python 3、VKE/ECS HTTPS API 访问及可被子进程继承的部署凭据**。新增 `hashicorp/external ~> 2.3` Provider 在 Plan 阶段执行可用性预检；读取权限和地域版本确认要求见[预检说明](PREFLIGHT.md)。组件协调脚本在 Terraform Apply 的执行环境中运行；临时身份还需传递 `VOLCENGINE_SESSION_TOKEN`。凭据由平台部署身份提供，不写入模板参数文件。
 
 默认关闭 Kubernetes API 公网访问，后续 kubectl 需通过 VPN、同 VPC 运维主机等私网路径连接。Worker 和 Pod 需要访问镜像仓库；示例采用公开 ECR 镜像，部署前确认目标网络可拉取。
 
@@ -193,8 +195,8 @@ kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
 **配置公网应用入口。** 将 `alb_instance_manifest` 输出保存为运维环境中的临时 YAML，并执行：
 
 ```bash
-kubectl apply --dry-run=server -f /tmp/enterprise-alb-instance.yaml
-kubectl apply -f /tmp/enterprise-alb-instance.yaml
+kubectl apply --dry-run=server -f /tmp/vke-alb-instance.yaml
+kubectl apply -f /tmp/vke-alb-instance.yaml
 kubectl apply -f examples/app.yaml
 kubectl -n vke-demo rollout status deployment/web --timeout=300s
 kubectl -n vke-demo get ingress,service,pods -o wide
@@ -306,14 +308,15 @@ AK/SK 与 Session Token 通过环境传递，不写入 HCL 或 `tfvars`。SSH �
 | 参数 | 默认值 / 入口 | 说明 |
 |---|---|---|
 | `region` / `project_name` | `cn-beijing` / `default` | 目标地域和已有项目 |
-| `name_prefix` | `enterprise-vke` | 2–36 位，小写字母开头，允许数字和连字符 |
-| `environment` / `owner` / `cost_center` | `dev` / `platform` / `platform` | 环境、责任方和成本标签 |
+| `name_prefix` | `vke` | 2–36 位，小写字母开头，允许数字和连字符 |
+| `tags` | `{}` | 仅添加用户明确配置的标签 |
 | `tags` | `{}` | 附加标签，基础标签优先 |
 | `vpc_cidr` | `10.0.0.0/16` | 新建私网 VPC |
 | `zones` | 北京 A/C，两种子网各两份 | 2–3 个不同 AZ；Node/Pod 网段需位于 VPC 内且互不重叠 |
 | `service_cidr` | `172.22.0.0/22` | 与 VPC 及已有连接网络不重叠 |
 | `kubernetes_version` | `1.32` | 使用 `1.xx` 格式，核对实际支持版本 |
-| `instance_types` | `["ecs.g4i.4xlarge"]` | 1–10 个各区可用且兼容 VKE 的规格 |
+| `kubernetes_version_confirmation` | `null` | 当前地域可创建版本的确认记录，包含完整版本，有效期 24 小时；见[预检说明](PREFLIGHT.md) |
+| `instance_types` | `["ecs.g4il.4xlarge"]` | 1–10 个不同的 VKE 规格，预检逐 AZ 确认当前库存 |
 | `image_id` | `null` | 单规格使用 VKE 默认镜像；多规格需公共兼容镜像 |
 | `ssh_key_pair_name` | 必填 | 目标地域已有密钥对名称 |
 | `system_volume_size` / `system_volume_type` | `80` / `ESSD_PL0` | GiB，40–2048 整数；也支持 `ESSD_FlexPL` |
@@ -357,23 +360,19 @@ elastic_max_replicas     = 10
 # ssh_key_pair_name 通过平台参数或 TF_VAR_ssh_key_pair_name 提供。
 ```
 
-运行预检查、初始化和部署：
+初始化后，Plan 自动预检；审查计划后，通过复检入口部署。先按[预检说明](PREFLIGHT.md)提供地域版本确认记录。
 
 ```bash
-python3 scripts/preflight.py \
-  --region cn-beijing \
-  --zones cn-beijing-a cn-beijing-c \
-  --instance-types ecs.g4i.4xlarge > preflight.json
 terraform init
 terraform fmt -check -recursive
 terraform validate
 terraform plan -out=deploy.tfplan
 terraform show deploy.tfplan
 # 审查计划后执行：
-terraform apply deploy.tfplan
+python3 scripts/apply-checked.py deploy.tfplan
 ```
 
-预检查查询规格、镜像和九个组件，不创建资源，也不证明库存或业务就绪。首次 Plan 应为 22 项新增；Apply 补齐两项协调组件，无需另行运行 `bootstrap-dns.py`。
+Terraform 将最终生效的参数传入预检，逐 AZ 检查 VKE 规格支持、ECS 实时库存、所选 Addon 版本及镜像兼容性。FAIL 或 UNKNOWN 会在创建云资源前阻断 Plan。地域 Kubernetes 可创建版本尚无已验证的公开查询接口，必须提供明确确认记录，不能用 Addon 兼容性推断。平台组件检查是否存在兼容候选，实际安装版本仍由服务管理。库存只是查询时的快照，不是容量预留；复检入口会在 Apply 前按保存计划的参数重新查询。首次 Plan 仍应为 22 项受管资源新增；Apply 补齐两项协调组件，无需另行运行 `bootstrap-dns.py`。
 
 **场景二：验证仅固定基线。** 在另一个空 State 的独立测试环境中，使用场景一的网络和两区固定容量，仅替换前缀及初始弹性容量：
 
@@ -397,7 +396,7 @@ terraform output
 terraform output -raw cluster_id
 terraform output -json nodepools
 terraform output -json egress
-terraform output -raw alb_instance_manifest > /tmp/enterprise-alb-instance.yaml
+terraform output -raw alb_instance_manifest > /tmp/vke-alb-instance.yaml
 ```
 
 默认应创建三个节点池，固定池输出按 AZ 索引，例如 `nodepools.fixed["cn-beijing-a"].id`。两种初始容量场景均为 21 个云资源及 1 个辅助对象；关闭模板管理 autoscaler 时少 1 个云资源。ALB 实例创建成功不等于已有监听器或可用应用；其他输出的含义及预期状态见第 4.1.4 节。
@@ -433,7 +432,7 @@ done
 kubectl delete -f examples/hpa.yaml --ignore-not-found
 kubectl -n vke-demo delete -f examples/node-scale-test.yaml --ignore-not-found
 kubectl delete -f examples/app.yaml --ignore-not-found
-kubectl delete albinstance enterprise-alb --ignore-not-found
+kubectl delete albinstance vke-alb --ignore-not-found
 ```
 
 `app.yaml` 包含测试命名空间；如果其中已有其他业务，应改为逐项清理本次创建的对象。确认控制器清理完成、ALB 仍由 Terraform 管理，再处理基础设施。

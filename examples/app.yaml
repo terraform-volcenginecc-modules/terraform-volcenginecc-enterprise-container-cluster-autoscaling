@@ -72,7 +72,7 @@ metadata:
     ingress.vke.volcengine.com/loadbalancer-protocol: "http"
     ingress.vke.volcengine.com/loadbalancer-pass-through: "true"
 spec:
-  ingressClassName: enterprise-alb
+  ingressClassName: vke-alb
   rules:
     - http:
         paths:

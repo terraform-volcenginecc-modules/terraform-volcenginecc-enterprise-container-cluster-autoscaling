@@ -8,6 +8,7 @@ module "network" {
   nat_spec         = var.nat_spec
   egress_bandwidth = var.egress_bandwidth
   tags             = local.common_tags
+  depends_on       = [data.external.preflight]
 }
 
 module "cluster" {

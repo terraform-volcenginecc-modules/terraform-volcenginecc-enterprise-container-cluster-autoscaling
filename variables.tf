@@ -7,7 +7,7 @@ variable "region" {
 variable "name_prefix" {
   description = "Unique environment prefix for resource names."
   type        = string
-  default     = "enterprise-vke"
+  default     = "vke"
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,35}$", var.name_prefix))
     error_message = "Use 2-36 lowercase letters, digits and hyphens, starting with a letter."
@@ -20,28 +20,11 @@ variable "project_name" {
   default     = "default"
 }
 
-variable "environment" {
-  description = "Environment tag."
-  type        = string
-  default     = "dev"
-}
-
-variable "owner" {
-  description = "Team owning the infrastructure."
-  type        = string
-  default     = "platform"
-}
-
-variable "cost_center" {
-  description = "Cost allocation tag."
-  type        = string
-  default     = "platform"
-}
-
 variable "tags" {
-  description = "Additional tags; mandatory base tags take precedence."
+  description = "User-defined resource tags. No management tags are added automatically."
   type        = map(string)
   default     = {}
+  nullable    = false
 }
 
 variable "vpc_cidr" {
@@ -86,13 +69,25 @@ variable "service_cidr" {
 }
 
 variable "kubernetes_version" {
-  description = "Published x.xx Kubernetes version; verify target-region availability before apply."
+  description = "Kubernetes minor version. Preflight requires a current confirmation that this region permits creating it."
   type        = string
   default     = "1.32"
   validation {
     condition     = can(regex("^1\\.[0-9]+$", var.kubernetes_version))
     error_message = "Use x.xx format, such as 1.32."
   }
+}
+
+variable "kubernetes_version_confirmation" {
+  description = "Operator confirmation from the target-region VKE create-cluster page or a verified service response. Valid for 24 hours; null blocks deployment."
+  type = object({
+    region           = string
+    version          = string
+    resolved_version = string
+    verified_at_utc  = string
+    source           = string
+  })
+  default = null
 }
 
 variable "vke_delete_protection_enabled" {
@@ -146,10 +141,15 @@ variable "alb_bandwidth" {
 variable "instance_types" {
   description = "1-10 VKE-compatible ECS types available in every selected AZ."
   type        = list(string)
-  default     = ["ecs.g4i.4xlarge"]
+  default     = ["ecs.g4il.4xlarge"]
+  nullable    = false
   validation {
-    condition     = length(var.instance_types) >= 1 && length(var.instance_types) <= 10
-    error_message = "Provide 1-10 instance types."
+    condition = (
+      length(var.instance_types) >= 1 && length(var.instance_types) <= 10 &&
+      length(distinct(var.instance_types)) == length(var.instance_types) &&
+      alltrue([for t in var.instance_types : can(regex("^ecs\\.[a-z0-9]+\\.[a-z0-9]+$", t))])
+    )
+    error_message = "Provide 1-10 distinct ECS instance type IDs."
   }
 }
 
@@ -228,7 +228,7 @@ variable "elastic_max_replicas" {
 }
 
 variable "addon_versions" {
-  description = "Versions of independently deletable Terraform-managed addons from ListSupportedAddons."
+  description = "Explicit versions of all enabled independently deletable addons. Preflight checks Kubernetes compatibility."
   type        = map(string)
   default     = {}
   validation {

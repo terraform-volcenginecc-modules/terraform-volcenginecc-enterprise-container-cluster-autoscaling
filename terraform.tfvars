@@ -1,9 +1,8 @@
 # Candidate configuration, not a region-availability assertion.
 # Verify AZs, Kubernetes, ECS types, images and addon versions before deployment.
 region             = "cn-beijing"
-name_prefix        = "enterprise-vke"
+name_prefix        = "vke"
 project_name       = "default"
-environment        = "dev"
 vpc_cidr           = "10.0.0.0/16"
 service_cidr       = "172.22.0.0/22"
 kubernetes_version = "1.32"
@@ -11,7 +10,7 @@ zones = [
   { zone_id = "cn-beijing-a", node_cidr = "10.0.0.0/24", pod_cidr = "10.0.16.0/20" },
   { zone_id = "cn-beijing-c", node_cidr = "10.0.1.0/24", pod_cidr = "10.0.32.0/20" },
 ]
-instance_types = ["ecs.g4i.4xlarge"]
+instance_types = ["ecs.g4il.4xlarge"]
 image_id       = null
 fixed_replicas_by_zone = {
   cn-beijing-a = 1
@@ -27,6 +26,8 @@ alb_delete_protection_enabled    = false
 api_server_public_access_enabled = false
 manage_cluster_autoscaler        = true
 # Supply the existing regional key-pair name via TF_VAR_ssh_key_pair_name.
+# Supply a current kubernetes_version_confirmation in a controlled variable file.
+# No regional creation availability is inferred from the default minor version.
 # Populate addon_versions from the preflight result for reproducible deployment.
 # Beijing / Kubernetes 1.32 selections queried on 2026-11-11; recheck before use.
 addon_versions = {

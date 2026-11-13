@@ -75,6 +75,7 @@ Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. 
 .
 ├── main.tf / locals.tf / variables.tf / outputs.tf
 ├── providers.tf / versions.tf / terraform.tfvars
+├── preflight.tf / PREFLIGHT.md
 ├── .gitignore
 ├── modules/
 │   ├── network/
@@ -84,6 +85,7 @@ Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. 
 │   └── alb/
 ├── scripts/
 │   ├── preflight.py
+│   ├── apply-checked.py
 │   ├── reconcile-required-addons.py
 │   ├── bootstrap-dns.py
 │   └── prepare-destroy.py
@@ -94,7 +96,7 @@ Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. 
 └── README.md / README.zh-CN.md
 ```
 
-Each module contains `main.tf`, `variables.tf`, `outputs.tf`, and `versions.tf`. The root configures the Provider; outputs establish network, cluster, pool, and addon dependencies. Main resources share Name, Environment, Project, Owner, and CostCenter tags; additional tags cannot override these base fields.
+Each module contains `main.tf`, `variables.tf`, `outputs.tf`, and `versions.tf`. The root configures the Provider; outputs establish network, cluster, pool, and addon dependencies. Resource tags come exclusively from `tags`, which defaults to `{}`. The template adds no Name, Environment, Project, Owner, or CostCenter tags. `project_name` remains the actual cloud project assignment.
 
 ### 3.3 Core Code Example
 
@@ -140,7 +142,7 @@ Enable VKE, ECS, VPC, NAT, EIP, and ALB in the target account. Check the project
 
 The execution identity needs CloudControl and resource create/read/update/delete, tag, and association permissions. The reconciler also calls VKE `ListClusters`, `ListSupportedAddons`, `ListAddons`, and `CreateAddon`. Provide an existing regional ECS SSH key-pair name, not its private key.
 
-**The platform executor needs `/bin/sh`, Python 3, VKE HTTPS access, and deployment credentials inherited by child processes.** Reconciliation runs in the Terraform Apply environment. Temporary identities also require `VOLCENGINE_SESSION_TOKEN`. The platform deployment identity provides credentials; do not store them in template variable files.
+**The platform executor needs `/bin/sh`, Python 3, VKE/ECS HTTPS access, and deployment credentials inherited by child processes.** The `hashicorp/external ~> 2.3` Provider runs availability preflight during Plan; see [PREFLIGHT.md](PREFLIGHT.md) for read permissions and regional version confirmation. Reconciliation runs in the Terraform Apply environment. Temporary identities also require `VOLCENGINE_SESSION_TOKEN`. The platform deployment identity provides credentials; do not store them in template variable files.
 
 The Kubernetes API is private by default. Later kubectl operations need VPN or a same-VPC operational host. Workers and Pods need access to image registries; the examples use public ECR images, whose availability must be checked from the target network.
 
@@ -193,8 +195,8 @@ The default should have one fixed Ready node in each of A/C and one initial elas
 **Configure public application ingress.** Save `alb_instance_manifest` to a temporary YAML file on the operational host:
 
 ```bash
-kubectl apply --dry-run=server -f /tmp/enterprise-alb-instance.yaml
-kubectl apply -f /tmp/enterprise-alb-instance.yaml
+kubectl apply --dry-run=server -f /tmp/vke-alb-instance.yaml
+kubectl apply -f /tmp/vke-alb-instance.yaml
 kubectl apply -f examples/app.yaml
 kubectl -n vke-demo rollout status deployment/web --timeout=300s
 kubectl -n vke-demo get ingress,service,pods -o wide
@@ -306,14 +308,15 @@ Pass AK/SK and Session Token through the environment, not HCL or `tfvars`. The S
 | Parameter | Default / input | Description |
 |---|---|---|
 | `region` / `project_name` | `cn-beijing` / `default` | Region and existing project |
-| `name_prefix` | `enterprise-vke` | 2–36 characters; lowercase letter first, then letters/digits/hyphens |
-| `environment` / `owner` / `cost_center` | `dev` / `platform` / `platform` | Environment, owner, and cost tags |
+| `name_prefix` | `vke` | 2–36 characters; lowercase letter first, then letters/digits/hyphens |
+| `tags` | `{}` | Only explicitly supplied user tags are attached |
 | `tags` | `{}` | Extra tags; base fields take precedence |
 | `vpc_cidr` | `10.0.0.0/16` | New private VPC |
 | `zones` | Beijing A/C, two subnet types each | 2–3 distinct AZs; Node/Pod CIDRs inside the VPC, without overlap |
 | `service_cidr` | `172.22.0.0/22` | Must not overlap the VPC or connected networks |
 | `kubernetes_version` | `1.32` | `1.xx` format; check supported releases |
-| `instance_types` | `["ecs.g4i.4xlarge"]` | 1–10 VKE-compatible types available in every AZ |
+| `kubernetes_version_confirmation` | `null` | Required creation evidence for this region and full Kubernetes version, valid for 24 hours; see [preflight](PREFLIGHT.md) |
+| `instance_types` | `["ecs.g4il.4xlarge"]` | 1–10 distinct VKE-compatible types; preflight checks current stock in every AZ |
 | `image_id` | `null` | VKE default for one type; multiple types need a common compatible image |
 | `ssh_key_pair_name` | Required | Existing regional key-pair name |
 | `system_volume_size` / `system_volume_type` | `80` / `ESSD_PL0` | GiB, integer 40–2048; also supports `ESSD_FlexPL` |
@@ -357,23 +360,19 @@ elastic_max_replicas     = 10
 # Supply ssh_key_pair_name through platform parameters or TF_VAR_ssh_key_pair_name.
 ```
 
-Run preflight, initialization, and deployment:
+Initialize and plan with automatic preflight, then apply the reviewed plan with a fresh inventory check. First supply the regional version confirmation described in [PREFLIGHT.md](PREFLIGHT.md).
 
 ```bash
-python3 scripts/preflight.py \
-  --region cn-beijing \
-  --zones cn-beijing-a cn-beijing-c \
-  --instance-types ecs.g4i.4xlarge > preflight.json
 terraform init
 terraform fmt -check -recursive
 terraform validate
 terraform plan -out=deploy.tfplan
 terraform show deploy.tfplan
 # Apply after reviewing the plan:
-terraform apply deploy.tfplan
+python3 scripts/apply-checked.py deploy.tfplan
 ```
 
-Preflight queries types, images, and nine addons without creating resources; it does not certify stock or business readiness. A fresh plan has 22 additions. Apply reconciles the two components; a separate `bootstrap-dns.py` run is not required.
+Terraform preflight receives resolved inputs and checks per-AZ VKE support, live ECS inventory, selected addon versions and image compatibility. FAIL or UNKNOWN blocks the plan before cloud creation. Regional Kubernetes creation support requires explicit confirmation because no verified public query is available; addon compatibility alone cannot prove it. Platform addons are checked for compatible candidates; their installed versions remain service-managed. Stock is a snapshot, not a capacity reservation. The checked apply command rechecks the saved plan's inputs before applying. A fresh plan still has 22 managed additions. Apply reconciles the two components; a separate `bootstrap-dns.py` run is not required.
 
 **Scenario two: fixed baseline only.** In another independent test environment with empty State, keep scenario one's network and per-AZ fixed counts. Replace only the prefix and initial elastic capacity:
 
@@ -397,7 +396,7 @@ terraform output
 terraform output -raw cluster_id
 terraform output -json nodepools
 terraform output -json egress
-terraform output -raw alb_instance_manifest > /tmp/enterprise-alb-instance.yaml
+terraform output -raw alb_instance_manifest > /tmp/vke-alb-instance.yaml
 ```
 
 The default has three pools; fixed outputs are indexed by AZ, such as `nodepools.fixed["cn-beijing-a"].id`. Both initial-capacity scenarios have 21 cloud resources plus one helper. Disabling template autoscaler management removes one cloud resource. Creating the ALB does not create an application or prove listener readiness; Section 4.1.4 explains other outputs and expected status.
@@ -433,7 +432,7 @@ Back up needed application data and remove user-created applications, Ingress, a
 kubectl delete -f examples/hpa.yaml --ignore-not-found
 kubectl -n vke-demo delete -f examples/node-scale-test.yaml --ignore-not-found
 kubectl delete -f examples/app.yaml --ignore-not-found
-kubectl delete albinstance enterprise-alb --ignore-not-found
+kubectl delete albinstance vke-alb --ignore-not-found
 ```
 
 `app.yaml` includes the test namespace. If it contains other workloads, remove only the objects created for this test. Confirm controller cleanup and Terraform ownership of the ALB before deleting infrastructure.

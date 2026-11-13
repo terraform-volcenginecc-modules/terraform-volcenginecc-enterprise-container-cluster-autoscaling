@@ -1,11 +1,5 @@
 locals {
-  common_tags = merge(var.tags, {
-    Name        = var.name_prefix
-    Environment = var.environment
-    Project     = var.project_name
-    Owner       = var.owner
-    CostCenter  = var.cost_center
-  })
+  common_tags = var.tags
 
   # Integer IPv4 intervals make containment and overlap checks independent of mask size.
   cidrs = concat([var.vpc_cidr, var.service_cidr], flatten([

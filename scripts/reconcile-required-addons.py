@@ -6,47 +6,9 @@ import json
 import os
 import re
 import time
-from preflight import query
+from preflight import query, compatible
 
 ALLOWED_ADDONS = {"core-dns", "metrics-server"}
-
-
-def version_key(value):
-    match = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?", value)
-    if not match:
-        raise ValueError("Unsupported Kubernetes version syntax.")
-    major, minor, patch, suffix = match.groups()
-    identifiers = tuple(
-        (0, int(part)) if part.isdigit() else (1, part)
-        for part in (suffix or "").split(".")
-    )
-    return (int(major), int(minor), int(patch or 0), suffix is None, identifiers)
-
-
-def compatible(actual, expression):
-    try:
-        current = version_key(actual)
-    except ValueError:
-        return False
-    outcomes = []
-    for alternative in expression.split("||"):
-        tokens = alternative.split()
-        if not tokens:
-            return False
-        accepted = True
-        for token in tokens:
-            bound = re.fullmatch(r"(>=|<=|>|<|=)?(v?\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)", token)
-            if not bound:
-                return False
-            operator, value = bound.groups()
-            target = version_key(value)
-            checks = {
-                ">=": current >= target, "<=": current <= target,
-                ">": current > target, "<": current < target, "=": current == target,
-            }
-            accepted = accepted and checks[operator or "="]
-        outcomes.append(accepted)
-    return any(outcomes)
 
 
 def emit(status, **details):

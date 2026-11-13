@@ -58,7 +58,7 @@ output "alb_instance_manifest" {
   value = yamlencode({
     apiVersion = "loadbalancer.vke.volcengine.com/v1beta1"
     kind       = "ALBInstance"
-    metadata   = { name = "enterprise-alb" }
+    metadata   = { name = "vke-alb" }
     spec = {
       instanceID           = module.alb.id
       blockCascadeDeletion = true
