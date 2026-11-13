@@ -1,0 +1,17 @@
+.terraform/
+.env
+.env.*
+__pycache__/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+*.auto.tfvars
+*.auto.tfvars.json
+local.tfvars
+kubeconfig*
+preflight.json
+backend.hcl
+deploy-plan.txt
+deployed-outputs.json
