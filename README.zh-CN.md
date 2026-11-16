@@ -67,7 +67,7 @@ CoreDNS 和 metrics-server 由模板内的 `terraform_data + local-exec + Python
 
 五个 Data Source 只读取三个平台组件和两个协调组件，不计入新建数量。Worker ECS、磁盘、网卡、隐式安全组、ALB 内嵌公网 EIP、控制面和集群内组件也不重复计入上述 21 个云资源，但仍有配额、费用和清理要求。
 
-关闭 `manage_cluster_autoscaler` 后为 20 个云资源及 1 个辅助对象；三 AZ 配置增加两个子网、两条 SNAT 和一个固定池，为 26 个云资源及 1 个辅助对象。已有 SSH 密钥对、State 存储和运维连接由调用方提供；模板不创建 IAM Role、监控后端或日志后端。
+关闭 `manage_cluster_autoscaler` 后为 20 个云资源及 1 个辅助对象；三 AZ 配置增加两个子网、两条 SNAT 和一个固定池，为 26 个云资源及 1 个辅助对象。节点登录凭据、State 存储和运维连接由调用方提供；模板不创建 IAM Role、监控后端或日志后端。
 
 ### 3.2 工程结构
 
@@ -112,7 +112,9 @@ module "nodepools" {
   fixed_replicas_by_zone    = var.fixed_replicas_by_zone
   instance_types           = var.instance_types
   image_id                 = var.image_id
+  node_login_method        = var.node_login_method
   ssh_key_pair_name         = var.ssh_key_pair_name
+  node_password            = var.node_password
   system_volume_size       = var.system_volume_size
   system_volume_type       = var.system_volume_type
   elastic_initial_replicas = var.elastic_initial_replicas
@@ -140,7 +142,7 @@ InfraManager 是火山引擎的 Terraform 托管工作台，参见 [InfraManager
 
 在目标账号开通 VKE、ECS、VPC、NAT、EIP 和 ALB，确认项目、余额、各 AZ 的实例库存、磁盘、ENI、Pod IP 和节点配额。首次使用时，按服务控制台提示准备 VKE、ALB 及 NAT 的服务关联角色，包括 `ServiceRoleForNatGateway`。
 
-执行身份需要 CloudControl，以及这些资源的创建、读取、更新、删除、标签和关联权限。组件协调器另外调用 VKE `ListClusters`、`ListSupportedAddons`、`ListAddons`、`CreateAddon`。准备目标地域已有的 ECS SSH 密钥对，只输入名称，不提供私钥。
+执行身份需要 CloudControl，以及这些资源的创建、读取、更新、删除、标签和关联权限。组件协调器另外调用 VKE `ListClusters`、`ListSupportedAddons`、`ListAddons`、`CreateAddon`。密钥登录时准备目标地域已有的 ECS SSH 密钥对，只输入名称，不提供私钥；密码登录时按第 4.2.1 节配置节点密码。
 
 **平台执行器需要 `/bin/sh`、Python 3、VKE/ECS HTTPS API 访问及可被子进程继承的部署凭据**。新增 `hashicorp/external ~> 2.3` Provider 在 Plan 阶段执行可用性预检；读取权限和地域版本确认要求见[预检说明](PREFLIGHT.md)。组件协调脚本在 Terraform Apply 的执行环境中运行；临时身份还需传递 `VOLCENGINE_SESSION_TOKEN`。凭据由平台部署身份提供，不写入模板参数文件。
 
@@ -156,7 +158,7 @@ InfraManager 是火山引擎的 Terraform 托管工作台，参见 [InfraManager
 
 #### 4.1.3 创建资源栈
 
-选择模板并点击 **创建资源栈**，填写资源栈信息和第 4.2.1 节的模板参数。必须提供目标地域已有的 `ssh_key_pair_name`，并为独立环境设置唯一 `name_prefix`。核对 `zones`、两种子网和 `fixed_replicas_by_zone` 的 AZ 键一致。
+选择模板并点击 **创建资源栈**，填写资源栈信息和第 4.2.1 节的模板参数。默认密钥登录必须提供目标地域已有的 `ssh_key_pair_name`，并显式设置 `node_password=null`；密码登录须设置 `node_login_method="Password"` 和 `ssh_key_pair_name=null`。为独立环境设置唯一 `name_prefix`。核对 `zones`、两种子网和 `fixed_replicas_by_zone` 的 AZ 键一致。
 
 默认保持 VKE 删除保护开启、ALB 删除保护关闭，并使用平台资源栈删除保护。创建执行计划，检查实际输入以及新增、更新、删除和替换动作。新环境默认为 22 项新增，再执行部署。
 
@@ -301,7 +303,7 @@ export TF_VAR_ssh_key_pair_name="<existing-regional-key-pair>"
 # 使用临时凭据时，另设置 VOLCENGINE_SESSION_TOKEN。
 ```
 
-AK/SK 与 Session Token 通过环境传递，不写入 HCL 或 `tfvars`。SSH 变量只传名称；模板不生成节点密码或 Kubeconfig。Provider 使用 `var.region`，单独设置 `VOLCENGINE_REGION` 不会覆盖文件中的地域。`terraform.tfvars` 的同名赋值优先于 `TF_VAR_*`，注入环境变量前检查是否存在文件赋值。
+AK/SK 与 Session Token 通过环境传递，不写入 HCL 或 `tfvars`。SSH 变量只传名称；密码模式输入原始密码，模板自动做 Base64 编码，不生成 Kubeconfig。Provider 使用 `var.region`，单独设置 `VOLCENGINE_REGION` 不会覆盖文件中的地域。`terraform.tfvars` 的同名赋值优先于 `TF_VAR_*`，注入环境变量前检查是否存在文件赋值。
 
 **重点参数**：默认值来自 `variables.tf`，`terraform.tfvars` 另外提供了插件版本示例。所有地域、规格和版本均需部署前确认。
 
@@ -318,7 +320,9 @@ AK/SK 与 Session Token 通过环境传递，不写入 HCL 或 `tfvars`。SSH �
 | `kubernetes_version_confirmation` | `null` | 当前地域可创建版本的确认记录，包含完整版本，有效期 24 小时；见[预检说明](PREFLIGHT.md) |
 | `instance_types` | `["ecs.g4il.4xlarge"]` | 1–10 个不同的 VKE 规格，预检逐 AZ 确认当前库存 |
 | `image_id` | `null` | 单规格使用 VKE 默认镜像；多规格需公共兼容镜像 |
-| `ssh_key_pair_name` | 必填 | 目标地域已有密钥对名称 |
+| `node_login_method` | `SshKeyPair` | 固定池和弹性池统一使用 `SshKeyPair` 或 `Password` |
+| `ssh_key_pair_name` | `null` | 密钥模式必填目标地域已有密钥对名称；密码模式须为 `null` |
+| `node_password` | `ReplaceWithStrongPassword123`（敏感） | 公开示例默认值，部署时替换；密钥模式须显式为 `null` |
 | `system_volume_size` / `system_volume_type` | `80` / `ESSD_PL0` | GiB，40–2048 整数；也支持 `ESSD_FlexPL` |
 | `fixed_replicas_by_zone` | A=1、C=1 | AZ 键必须与 `zones` 一致，每区 1–2000 整数 |
 | `elastic_initial_replicas` / `elastic_min_replicas` / `elastic_max_replicas` | `1` / `0` / `10` | 整数且满足 `0 <= min <= initial <= max <= 2000` |
@@ -339,7 +343,27 @@ Node/Pod 子网均需满足地址容量要求。Service 网段与外部连接网
 
 #### 4.2.2 场景化部署示例
 
-**场景一：默认双 AZ 底座。** 确认 `terraform.tfvars` 中的北京 A/C、规格、插件版本和密钥对输入适用于目标账号，按以下步骤准备独立新环境。
+节点登录配置示例（固定池和弹性池共用）：
+
+```hcl
+# 密钥模式：terraform.tfvars 已设置此模式和 node_password=null。
+node_login_method = "SshKeyPair"
+ssh_key_pair_name = "<existing-regional-key-pair>"
+node_password     = null
+```
+
+```hcl
+# 密码模式：原始密码，不要预先进行 Base64 编码。
+node_login_method = "Password"
+ssh_key_pair_name = null
+node_password     = "ReplaceWithStrongPassword123"
+```
+
+`node_password` 保留公开示例默认值，生产部署须替换。原始密码长度 8–30，至少包含大写字母、小写字母、数字、特殊字符中的三类；特殊字符仅支持 `()~!@#$%^&*_+-=`，不能以 `/` 或 `$6$` 开头。两种凭据互斥，配置不符会阻止 Plan。上述密码示例写在文档中仅用于说明；真实密码应通过平台敏感参数或受控变量文件传入。使用环境变量时先移除 `terraform.tfvars` 中同名赋值，或用优先级更高的 `-var-file` 覆盖模式和密码。直接调用模块或只使用变量默认值时，密钥模式仍须显式设置 `node_password=null`。
+
+`sensitive=true` 仅隐藏常规终端展示，密码及其 Base64 值仍可能保存在 State、保存的 Plan 和 `terraform show -json` 输出中；Base64 不是加密。保护这些文件和后端访问权限。切换登录模式只修改节点池配置，不代表存量节点已完成凭据切换；按 VKE 节点更新流程验证存量节点及新扩容节点的实际登录结果。
+
+**场景一：默认双 AZ 底座。** 确认 `terraform.tfvars` 中的北京 A/C、规格、插件版本和节点登录输入适用于目标账号，按以下步骤准备独立新环境。
 
 在参数文件中填写下列基础配置，`vke-demo` 前缀应改为本次环境的唯一值；其余参数保留已确认的配置：
 

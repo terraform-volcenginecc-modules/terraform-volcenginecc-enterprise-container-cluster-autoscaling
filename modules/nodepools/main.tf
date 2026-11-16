@@ -1,5 +1,18 @@
 locals {
   tags = [for k, v in var.tags : { key = k, value = v }]
+  login_valid = var.node_login_method == "SshKeyPair" ? (
+    try(length(trimspace(var.ssh_key_pair_name)) > 0, false) && var.node_password == null
+    ) : (
+    var.ssh_key_pair_name == null && var.node_password != null
+  )
+  # Type is read-only in the provider schema. Send only the selected credential.
+  node_login = var.node_login_method == "Password" ? {
+    password          = var.node_password == null ? null : base64encode(var.node_password)
+    ssh_key_pair_name = null
+    } : {
+    password          = null
+    ssh_key_pair_name = var.ssh_key_pair_name == null ? null : trimspace(var.ssh_key_pair_name)
+  }
   node_config = {
     instance_type_ids     = var.instance_types
     image_id              = var.image_id
@@ -8,7 +21,7 @@ locals {
     project_name          = var.project_name
     public_access_enabled = false
     security = {
-      login = { ssh_key_pair_name = var.ssh_key_pair_name }
+      login = local.node_login
     }
     system_volume = { size = var.system_volume_size, type = var.system_volume_type }
     tags          = local.tags
@@ -33,6 +46,10 @@ resource "volcenginecc_vke_node_pool" "fixed" {
   }
   tags = local.tags
   lifecycle {
+    precondition {
+      condition     = local.login_valid
+      error_message = "SshKeyPair requires a non-empty ssh_key_pair_name and node_password=null; Password requires node_password and ssh_key_pair_name=null."
+    }
     precondition {
       condition     = toset(keys(var.fixed_replicas_by_zone)) == toset(keys(var.node_subnet_ids_by_zone))
       error_message = "Fixed replica AZ keys must exactly match the Node subnet AZ keys."
@@ -61,6 +78,10 @@ resource "volcenginecc_vke_node_pool" "elastic" {
   tags       = local.tags
   depends_on = [volcenginecc_vke_node_pool.fixed]
   lifecycle {
+    precondition {
+      condition     = local.login_valid
+      error_message = "SshKeyPair requires a non-empty ssh_key_pair_name and node_password=null; Password requires node_password and ssh_key_pair_name=null."
+    }
     # Do not reset the autoscaler's live desired count during unrelated applies.
     ignore_changes = [auto_scaling.desired_replicas]
     precondition {

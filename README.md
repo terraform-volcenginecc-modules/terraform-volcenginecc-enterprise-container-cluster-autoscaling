@@ -67,7 +67,7 @@ With two AZs and autoscaler management enabled, the default creates **21 cloud r
 
 Five Data Sources only read three platform components and two reconciled components. Worker ECS instances, disks, NICs, implicit security groups, ALB embedded public EIPs, the control plane, and in-cluster components are not counted again as the 21 resources, but still require quota, billing, and cleanup checks.
 
-Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. Three AZs add two subnets, two SNATs, and one fixed pool: 26 cloud resources plus one helper. Callers provide existing SSH keys, State storage, and operational access. The template does not create IAM roles or monitoring/logging backends.
+Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. Three AZs add two subnets, two SNATs, and one fixed pool: 26 cloud resources plus one helper. Callers provide node login credentials, State storage, and operational access. The template does not create IAM roles or monitoring/logging backends.
 
 ### 3.2 Project Structure
 
@@ -112,7 +112,9 @@ module "nodepools" {
   fixed_replicas_by_zone    = var.fixed_replicas_by_zone
   instance_types           = var.instance_types
   image_id                 = var.image_id
+  node_login_method        = var.node_login_method
   ssh_key_pair_name         = var.ssh_key_pair_name
+  node_password            = var.node_password
   system_volume_size       = var.system_volume_size
   system_volume_type       = var.system_volume_type
   elastic_initial_replicas = var.elastic_initial_replicas
@@ -140,7 +142,7 @@ InfraManager is Volcengine's Terraform hosting workbench. See the [product intro
 
 Enable VKE, ECS, VPC, NAT, EIP, and ALB in the target account. Check the project, balance, regional instance stock, disks, ENIs, Pod IP space, and node quotas. On first use, follow service-console instructions for VKE, ALB, and NAT service-linked roles, including `ServiceRoleForNatGateway`.
 
-The execution identity needs CloudControl and resource create/read/update/delete, tag, and association permissions. The reconciler also calls VKE `ListClusters`, `ListSupportedAddons`, `ListAddons`, and `CreateAddon`. Provide an existing regional ECS SSH key-pair name, not its private key.
+The execution identity needs CloudControl and resource create/read/update/delete, tag, and association permissions. The reconciler also calls VKE `ListClusters`, `ListSupportedAddons`, `ListAddons`, `CreateAddon`. For key login, provide an existing regional ECS SSH key-pair name, not its private key; for password login, configure the node password as described in Section 4.2.1.
 
 **The platform executor needs `/bin/sh`, Python 3, VKE/ECS HTTPS access, and deployment credentials inherited by child processes.** The `hashicorp/external ~> 2.3` Provider runs availability preflight during Plan; see [PREFLIGHT.md](PREFLIGHT.md) for read permissions and regional version confirmation. Reconciliation runs in the Terraform Apply environment. Temporary identities also require `VOLCENGINE_SESSION_TOKEN`. The platform deployment identity provides credentials; do not store them in template variable files.
 
@@ -156,7 +158,7 @@ Preserve relative paths for root Terraform files, `modules/`, `scripts/`, and `e
 
 #### 4.1.3 Create the Stack
 
-Select the template, click **Create stack**, and fill in stack information and parameters from Section 4.2.1. Supply the required existing regional `ssh_key_pair_name` and a unique `name_prefix`. Verify that `zones`, both subnet types, and `fixed_replicas_by_zone` agree on AZs.
+Select the template, click **Create stack**, and fill in stack information and parameters from Section 4.2.1. Default key login requires an existing regional `ssh_key_pair_name` and explicit `node_password=null`; password login requires `node_login_method="Password"` and `ssh_key_pair_name=null`. Supply a unique `name_prefix`. Verify that `zones`, both subnet types, and `fixed_replicas_by_zone` agree on AZs.
 
 Keep VKE deletion protection enabled and ALB protection disabled by default, using platform stack protection. Generate the execution plan and inspect actual inputs and all additions, updates, deletions, and replacements. A fresh default environment has 22 additions; deploy after review.
 
@@ -301,7 +303,7 @@ export TF_VAR_ssh_key_pair_name="<existing-regional-key-pair>"
 # Temporary credentials also require VOLCENGINE_SESSION_TOKEN.
 ```
 
-Pass AK/SK and Session Token through the environment, not HCL or `tfvars`. The SSH variable is a name only; the template does not generate passwords or kubeconfig. The Provider uses `var.region`; `VOLCENGINE_REGION` alone does not override file settings. Same-name assignments in `terraform.tfvars` take precedence over `TF_VAR_*`.
+Pass AK/SK and Session Token through the environment, not HCL or `tfvars`. The SSH variable is a name only; password mode accepts a raw password and automatically Base64-encodes it. The template does not generate kubeconfig. The Provider uses `var.region`; `VOLCENGINE_REGION` alone does not override file settings. Same-name assignments in `terraform.tfvars` take precedence over `TF_VAR_*`.
 
 **Key parameters**: defaults below come from `variables.tf`; `terraform.tfvars` additionally supplies addon version examples. Recheck all regions, specifications, and versions before deployment.
 
@@ -318,7 +320,9 @@ Pass AK/SK and Session Token through the environment, not HCL or `tfvars`. The S
 | `kubernetes_version_confirmation` | `null` | Required creation evidence for this region and full Kubernetes version, valid for 24 hours; see [preflight](PREFLIGHT.md) |
 | `instance_types` | `["ecs.g4il.4xlarge"]` | 1–10 distinct VKE-compatible types; preflight checks current stock in every AZ |
 | `image_id` | `null` | VKE default for one type; multiple types need a common compatible image |
-| `ssh_key_pair_name` | Required | Existing regional key-pair name |
+| `node_login_method` | `SshKeyPair` | `SshKeyPair` or `Password`, shared by fixed and elastic pools |
+| `ssh_key_pair_name` | `null` | Required existing regional key-pair name in key mode; must be `null` in password mode |
+| `node_password` | `ReplaceWithStrongPassword123` (sensitive) | Public example default: replace for deployment; explicitly set `null` in key mode |
 | `system_volume_size` / `system_volume_type` | `80` / `ESSD_PL0` | GiB, integer 40–2048; also supports `ESSD_FlexPL` |
 | `fixed_replicas_by_zone` | A=1, C=1 | Keys exactly match `zones`; integer 1–2000 per AZ |
 | `elastic_initial_replicas` / `elastic_min_replicas` / `elastic_max_replicas` | `1` / `0` / `10` | Integers with `0 <= min <= initial <= max <= 2000` |
@@ -339,7 +343,27 @@ Size Node/Pod subnets for address capacity. Callers must check overlap with conn
 
 #### 4.2.2 Deployment Scenarios
 
-**Scenario one: default two-AZ foundation.** Check that Beijing A/C, instance types, addon versions, and SSH key input in `terraform.tfvars` suit the account, then prepare an independent environment as follows.
+Node login examples, shared by fixed and elastic pools:
+
+```hcl
+# terraform.tfvars already selects key mode and node_password=null.
+node_login_method = "SshKeyPair"
+ssh_key_pair_name = "<existing-regional-key-pair>"
+node_password     = null
+```
+
+```hcl
+# Supply a raw password; do not Base64-encode it yourself.
+node_login_method = "Password"
+ssh_key_pair_name = null
+node_password     = "ReplaceWithStrongPassword123"
+```
+
+Replace the public example password for production. The raw password must be 8–30 characters and contain at least three of lowercase, uppercase, digits and special characters. Only `()~!@#$%^&*_+-=` are supported special characters; passwords cannot start with `/` or `$6$`. Credentials are mutually exclusive; invalid configurations block Plan. These documentation examples are illustrative: pass real passwords through sensitive platform parameters or a controlled variable file. Before using environment variables, remove same-name assignments from `terraform.tfvars`, or override the mode and password with a higher-priority `-var-file`. Direct module callers and callers using only variable defaults must still explicitly set `node_password=null` for key login.
+
+`sensitive=true` hides ordinary terminal display; passwords and their Base64 values may still be stored in State, saved Plan files and `terraform show -json` output. Base64 is not encryption. Protect these files and backend access. Changing login mode updates the pool configuration; it does not establish that existing nodes have switched credentials. Follow the VKE node update process and verify actual login for existing and newly scaled nodes.
+
+**Scenario one: default two-AZ foundation.** Check that Beijing A/C, instance types, addon versions, and node login input in `terraform.tfvars` suit the account, then prepare an independent environment as follows.
 
 Set these base values in your variable file, replacing `vke-demo` with a unique environment prefix and retaining the other verified settings:
 

@@ -12,6 +12,11 @@ zones = [
 ]
 instance_types = ["ecs.g4il.4xlarge"]
 image_id       = null
+# Default key login: provide ssh_key_pair_name through TF_VAR_ssh_key_pair_name.
+# Password mode: override node_login_method and node_password in a controlled
+# variable file (these assignments take precedence over TF_VAR_*).
+node_login_method = "SshKeyPair"
+node_password     = null
 fixed_replicas_by_zone = {
   cn-beijing-a = 1
   cn-beijing-c = 1

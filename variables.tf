@@ -159,12 +159,41 @@ variable "image_id" {
   default     = null
 }
 
-variable "ssh_key_pair_name" {
-  description = "Existing ECS SSH key pair in the target region. Never provide the private key."
+variable "node_login_method" {
+  description = "Worker OS login method shared by fixed and elastic pools: SshKeyPair or Password."
   type        = string
+  default     = "SshKeyPair"
+  nullable    = false
   validation {
-    condition     = length(trimspace(var.ssh_key_pair_name)) > 0
-    error_message = "An existing regional ECS SSH key pair name is required."
+    condition     = contains(["SshKeyPair", "Password"], var.node_login_method)
+    error_message = "node_login_method must be SshKeyPair or Password."
+  }
+}
+
+variable "ssh_key_pair_name" {
+  description = "Existing regional ECS SSH key-pair name for SshKeyPair mode; null in Password mode. Never provide the private key."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.ssh_key_pair_name == null ? true : try(length(trimspace(var.ssh_key_pair_name)) > 0, false)
+    error_message = "ssh_key_pair_name must be null or a non-empty regional key-pair name."
+  }
+}
+
+variable "node_password" {
+  description = "Raw worker OS password, encoded as Base64 for VKE. Public example default: replace for deployment; explicitly set null in SshKeyPair mode."
+  type        = string
+  default     = "ReplaceWithStrongPassword123"
+  sensitive   = true
+  validation {
+    condition = var.node_password == null ? true : try(
+      length(var.node_password) >= 8 && length(var.node_password) <= 30 &&
+      can(regex("^[A-Za-z0-9()~!@#$%^&*_+=-]+$", var.node_password)) &&
+      !startswith(var.node_password, "/") && !startswith(var.node_password, "$6$") &&
+      length([for pattern in ["[a-z]", "[A-Z]", "[0-9]", "[()~!@#$%^&*_+=-]"] : pattern if can(regex(pattern, var.node_password))]) >= 3,
+      false
+    )
+    error_message = "node_password must be null or 8-30 characters using at least three of lowercase, uppercase, digits and ()~!@#$%^&*_+=-; it cannot start with / or $6$."
   }
 }
 

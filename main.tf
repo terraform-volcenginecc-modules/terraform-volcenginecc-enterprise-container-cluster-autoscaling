@@ -34,7 +34,9 @@ module "nodepools" {
   node_subnet_ids_by_zone  = module.network.node_subnet_ids_by_zone
   instance_types           = var.instance_types
   image_id                 = var.image_id
+  node_login_method        = var.node_login_method
   ssh_key_pair_name        = var.ssh_key_pair_name
+  node_password            = var.node_password
   system_volume_size       = var.system_volume_size
   system_volume_type       = var.system_volume_type
   fixed_replicas_by_zone   = var.fixed_replicas_by_zone
