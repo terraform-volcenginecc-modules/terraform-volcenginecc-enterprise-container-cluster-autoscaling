@@ -153,7 +153,7 @@ module "nodepools" {
 
 Within the module, fixed pools use AZ names from `fixed_replicas_by_zone` as `for_each` keys and each bind one corresponding Node subnet. AZ keys are known at Plan time and do not depend on uncreated subnet IDs. Fixed-count keys must exactly match the selected subnet AZs, with at least one node per AZ. The shared elastic pool uses all Node subnets and `ZoneBalance`. Only external changes to `auto_scaling.desired_replicas` are ignored; Terraform still owns the minimum and maximum.
 
-Fresh creation follows network → cluster → fixed/elastic pools → deletable addons → Required addon reconciliation and readback. ALB is a separate network branch. The cluster owns CoreDNS and metrics-server; Terraform manages deletable addons. Existing pool migration and teardown are described in Sections 4.2.4 and 4.2.5.
+Fresh creation follows network → cluster → fixed/elastic pools → deletable addons → Required addon reconciliation and readback. ALB is a separate network branch. The cluster owns CoreDNS and metrics-server; Terraform manages deletable addons. Section 4.2.5 describes teardown.
 
 ## 4. Usage
 
@@ -167,15 +167,35 @@ InfraManager is Volcengine's managed Terraform workspace. For more information, 
 
 #### 4.1.1 Prepare Permissions
 
-Enable VKE, ECS, VPC, NAT, EIP, and ALB in the target account. Check the project, balance, regional instance stock, disks, ENIs, Pod IP space, and node quotas. On first use, follow service-console instructions for VKE, ALB, and NAT service-linked roles, including `ServiceRoleForNatGateway`.
+Before deployment, prepare the target account's services, deployment permissions, and node login credentials, and confirm how you will access the cluster afterwards. Check the following in order:
 
-The execution identity needs InfraManager stack operations, CloudControl permissions, and create/read/update/delete, tag, and association permissions for these cloud resources. Preflight needs read access to VKE `ListSupportedResourceTypes`, `ListSupportedAddons`, `ListSupportedImages`, and ECS `DescribeAvailableResource`; the reconciler additionally needs VKE `ListClusters`, `ListAddons`, and `CreateAddon`. For key login, provide an existing regional ECS SSH key-pair name, not its private key; for password login, configure the node password as described in Section 4.2.1.
+1. **Activate services and check quotas**
 
-**The platform executor needs `/bin/sh`, Python 3, VKE/ECS HTTPS access, and deployment credentials inherited by child processes.** The `hashicorp/external ~> 2.3` Provider runs `scripts/preflight.py` during Plan. Apply runs `scripts/reconcile-required-addons.py`, which depends on `scripts/preflight.py` in the same directory. Temporary identities also require `VOLCENGINE_SESSION_TOKEN`. The platform deployment identity provides credentials; do not store them in template variable files. Section 4.2.2 provides the complete regional version confirmation procedure.
+   Enable VKE, ECS, VPC, NAT, EIP, and ALB in the target account. Check the target project, account balance, and each AZ's instance inventory, disks, ENIs, Pod IP space, and node quotas. On first use, follow the service consoles to authorize service-linked roles for VKE, ALB, and NAT, including `ServiceRoleForNatGateway`.
 
-The Kubernetes API is private by default. Later kubectl operations need VPN or a same-VPC operational host. Workers and Pods need access to image registries; the examples use public ECR images, whose availability must be checked from the target network.
+2. **Grant cloud resource permissions to the deployment identity**
 
-The post-deployment operational identity also needs Kubernetes RBAC for the target cluster: read access to nodes, components, and metrics; application, Pod, Service, Ingress, and HPA management in the test namespace; and cluster-level ALBInstance and IngressClass management. Cloud resource permissions do not grant these rights automatically. Developer access limited to one namespace is insufficient for the complete verification.
+   The deployment identity needs InfraManager stack operations, CloudControl permissions, and create/read/update/delete, tag, and association permissions for the cloud resources above.
+
+   The template also checks availability and installs required components. Grant VKE `ListSupportedResourceTypes`, `ListSupportedAddons`, `ListSupportedImages`, `ListClusters`, `ListAddons`, and `CreateAddon`, plus ECS `DescribeAvailableResource`. Only `CreateAddon` creates components; the other APIs read information for verification.
+
+3. **Prepare node login credentials**
+
+   For key login, prepare an existing ECS SSH key pair in the target region. Enter only its name in the template, not its private key. For password login, configure the node password as described in Section 4.2.1.
+
+4. **Confirm that the platform can run the template**
+
+   The platform execution environment needs `/bin/sh`, Python 3, and access to VKE/ECS HTTPS APIs. The platform deployment identity supplies credentials, which must also be available to subprocesses invoked by the template. Temporary credentials additionally require `VOLCENGINE_SESSION_TOKEN`. Do not store credentials in template variable files.
+
+   During Plan, the template runs `scripts/preflight.py` through `hashicorp/external ~> 2.3`. During Apply, it runs `scripts/reconcile-required-addons.py`, which depends on `scripts/preflight.py` in the same directory. Retain these files when uploading the template. See Section 4.2.2 for regional version confirmation.
+
+5. **Prepare cluster connectivity and image access**
+
+   Public Kubernetes API access is disabled by default. Post-deployment kubectl operations need a private connection through a VPN or an operational host in the same VPC. Workers and Pods must reach image registries. The examples use public ECR images; confirm that the target network can pull them.
+
+6. **Grant cluster permissions to the operational identity**
+
+   Post-deployment verification also requires Kubernetes RBAC for the target cluster: viewing nodes, components, and metrics; managing applications, Pods, Services, Ingress, and HPA in the test namespace; and managing cluster-level ALBInstance and IngressClass objects. Cloud resource and cluster permissions are granted separately. Developer access limited to one namespace is insufficient for the complete verification.
 
 #### 4.1.2 Select the Template
 
@@ -339,7 +359,7 @@ export VOLCENGINE_REGION="cn-beijing"
 
 Temporary credentials also require `VOLCENGINE_SESSION_TOKEN`. The Provider uses explicitly configured `var.region`; `VOLCENGINE_REGION` does not override the variable file's region. Preflight also uses Terraform's resolved region. The template does not generate kubeconfig.
 
-**Sensitive business variables**: `node_password` is sensitive and is used for Worker system login in Password mode. Inject it through an environment variable instead of storing it in `terraform.tfvars`:
+**Sensitive business variables**: `node_password` is sensitive and is used for Worker system login in Password mode. The raw password must have 8–30 characters and contain at least three of uppercase letters, lowercase letters, digits, and special characters. Only `()~!@#$%^&*_+-=` are supported special characters. Inject it through an environment variable instead of storing it in `terraform.tfvars`:
 
 ```bash
 export TF_VAR_node_password="<your-strong-node-password>"
@@ -347,7 +367,7 @@ export TF_VAR_node_password="<your-strong-node-password>"
 
 Remove the `node_password` assignment from variable files before injection; same-name assignments in `terraform.tfvars` or `-var-file` take precedence over `TF_VAR_*`. Password mode also requires `node_login_method="Password"` and `ssh_key_pair_name=null`. For SshKeyPair mode, clear the password environment variable, set `node_password=null`, and supply an existing key-pair name, not its private key. Supply a raw password; the template Base64-encodes it automatically. Base64 is not encryption, and passwords and encoded values can remain in State, Plan, and JSON output. Protect these files and backend access.
 
-**Key parameters**: defaults come from `variables.tf`. The current `terraform.tfvars` illustrates Beijing A/C, one fixed node per AZ, one initial elastic node, `ecs.g4i.4xlarge`, a Kubernetes 1.32 confirmation record, and specified addon versions, using Password mode. These do not establish current availability in your account. Explicitly add the required `kubernetes_version`, refresh the confirmation, and remove the password placeholder assignment. Section 4.2.2 provides a complete required-input example.
+**Key parameters**: defaults come from `variables.tf`. The current `terraform.tfvars` illustrates Beijing A/C, one fixed node per AZ, one initial elastic node, `ecs.g4i.4xlarge`, a Kubernetes 1.32 confirmation record, and specified addon versions, using Password mode. These do not establish current availability in your account. Explicitly add the required `kubernetes_version`, refresh the confirmation, and remove the password placeholder assignment. Section 4.2.2 provides a deployment example based on this file.
 
 | Parameter | Default / input | Description |
 |---|---|---|
@@ -387,192 +407,148 @@ Size Node/Pod subnets for address capacity. Callers must check overlap with conn
 
 #### 4.2.2 Scenario-based Deployment Examples
 
-Initialize and validate:
+This example creates a new cluster in Beijing A/C with one fixed node per AZ and one initial elastic node.
 
-```bash
-terraform init
-terraform fmt -check -recursive
-terraform validate
-```
+1. **Prepare parameters**
 
-Node login examples, shared by fixed and elastic pools; choose one:
+   Use the network, node capacity, and addon configuration in `terraform.tfvars`. Check instance types, versions, and login credentials as described in Section 4.2.1. Set a unique `name_prefix` for this environment and add or update:
 
-```hcl
-# Key mode: replace Password mode in the current variable file.
-node_login_method = "SshKeyPair"
-ssh_key_pair_name = "<existing-regional-key-pair>"
-node_password     = null
-```
+   ```hcl
+   kubernetes_version = "1.32"
+   kubernetes_version_confirmation = {
+     region           = "cn-beijing"
+     version          = "1.32"
+     resolved_version = "<verified-full-Kubernetes-version>"
+     verified_at_utc  = "<actual-ISO8601-verification-time-with-timezone>"
+   }
+   ```
 
-```hcl
-# Password mode: remove node_password from variable files and use Section 4.2.1's environment variable.
-node_login_method = "Password"
-ssh_key_pair_name = null
-```
+   Verify the full version on the target region's VKE cluster-creation page. Replace placeholders with the actual version and verification time including timezone; confirmation is valid for 24 hours. The current example uses Password mode. Remove the `node_password` placeholder assignment (`REPLACE_ME`), then inject the password as described in Section 4.2.1.
 
-`node_password` defaults to `null`, but Password mode requires a valid password. The raw password must be 8–30 characters and contain at least three of lowercase, uppercase, digits, and special characters. Only `()~!@#$%^&*_+-=` are supported special characters; passwords cannot start with `/` or `$6$`. Credentials are mutually exclusive; invalid configurations block Plan. `REPLACE_ME` in `terraform.tfvars` fails validation; delete that assignment before using an environment variable.
+2. **Initialize and validate**
 
-Changing login mode updates the pool configuration; it does not establish that existing nodes have switched credentials. Follow the VKE node update process and verify actual login for existing and newly scaled nodes.
+   Run from the template root:
 
-**Scenario one: two-AZ foundation.** Open cluster creation in the target region's VKE console. Verify the selectable Kubernetes minor and corresponding full version, and record the actual verification time with timezone. Only actual verification results are valid, for 24 hours. Missing, future-dated, timezone-free, or region/version-mismatched records block preflight. Recheck when changing region or version; do not merely refresh timestamps on old records.
+   ```bash
+   terraform init
+   terraform fmt -check -recursive
+   terraform validate
+   ```
 
-Enter the required configuration below in the variable file. Use a unique environment prefix and replace versions, instance types, and addons with values verified in the target region. Full version and verification time are placeholders that must be replaced before deployment. Add login parameters from either example above; supply passwords only through an environment variable or sensitive platform input:
+3. **Review the plan and deploy**
 
-```hcl
-region      = "cn-beijing"
-name_prefix = "vke-demo"
-kubernetes_version = "1.32"
-kubernetes_version_confirmation = {
-  region           = "cn-beijing"
-  version          = "1.32"
-  resolved_version = "<verified-full-Kubernetes-version>"
-  verified_at_utc  = "<actual-ISO8601-verification-time-with-timezone>"
-}
-zones = [
-  { zone_id = "cn-beijing-a", node_cidr = "10.0.0.0/24", pod_cidr = "10.0.16.0/20" },
-  { zone_id = "cn-beijing-c", node_cidr = "10.0.1.0/24", pod_cidr = "10.0.32.0/20" },
-]
-fixed_replicas_by_zone = {
-  cn-beijing-a = 1
-  cn-beijing-c = 1
-}
-instance_types = ["ecs.g4i.4xlarge"]
-addon_versions = {
-  prometheus-agent      = "v3.10.0-vke.1.30"
-  log-collector         = "v2.3.3"
-  node-problem-detector = "v1.36.4-vke.1"
-  cluster-autoscaler    = "v1.30.3-vke.15"
-}
-required_addons = {
-  core-dns = {
-    version          = "1.12.4"
-    deploy_mode      = "Unmanaged"
-    deploy_node_type = "Node"
-  }
-  metrics-server = {
-    version          = "v0.7.1-vke.6"
-    deploy_mode      = "Unmanaged"
-    deploy_node_type = "Node"
-  }
-}
-elastic_initial_replicas = 1
-elastic_min_replicas     = 0
-elastic_max_replicas     = 10
-# Add node_login_method and the corresponding credentials from the login examples above.
-```
+   ```bash
+   terraform plan -input=false -out=deploy.tfplan
+   terraform show deploy.tfplan
+   # Run after confirming the resources and parameters are as expected:
+   python3 scripts/apply-checked.py deploy.tfplan
+   ```
 
-After initialization, Plan performs preflight automatically. Review the plan and deploy through `scripts/apply-checked.py`, which depends on `scripts/preflight.py` in the same directory and Terraform in PATH. It rechecks the saved plan's resolved inputs before applying that plan. Preflight failure returns 1 without starting Apply; repeated runs remain subject to Terraform's plan-validity checks:
+   Plan checks instance inventory, addon compatibility, and image compatibility. The checked-apply script depends on `scripts/preflight.py` in the same directory and rechecks availability before Apply, stopping deployment on failure. Inventory checks do not reserve capacity.
 
-```bash
-terraform plan -input=false -out=deploy.tfplan
-terraform show deploy.tfplan
-# Apply after reviewing the plan:
-python3 scripts/apply-checked.py deploy.tfplan
-```
-
-Terraform preflight receives resolved inputs and checks per-AZ VKE support, live ECS inventory, selected addon versions and image compatibility. FAIL or UNKNOWN blocks the plan before cloud creation. Regional Kubernetes creation support requires explicit confirmation because no verified public query is available; addon compatibility alone cannot prove it. Platform addons are checked for compatible candidates; their installed versions remain service-managed. Stock is a snapshot, not a capacity reservation. The checked apply command rechecks the saved plan's inputs before applying. A fresh plan still has 22 managed additions. Apply reconciles the two components; a separate `scripts/bootstrap-dns.py` run is not required.
-
-**Scenario two: fixed baseline only.** In another independent test environment with empty State, keep scenario one's network and per-AZ fixed counts. Replace only the prefix and initial elastic capacity:
-
-```hcl
-name_prefix             = "vke-baseline-demo"
-elastic_initial_replicas = 0
-elastic_min_replicas     = 0
-elastic_max_replicas     = 10
-```
-
-Use a unique prefix, complete initialization above, and run the following commands. Prepare all other required inputs and credentials as in scenario one:
-
-```bash
-terraform plan -input=false -out=deploy.tfplan
-terraform show deploy.tfplan
-python3 scripts/apply-checked.py deploy.tfplan
-```
-
-The plan still has 22 additions, but only the two fixed workers start initially. Verify both zones, DNS, and egress. This scenario tests the initial fixed baseline; the enabled autoscaler can still add elastic nodes under later load.
-
-Both scenarios create independent new environments. Existing elastic pools ignore live desired-count changes: editing `elastic_initial_replicas` does not reset running capacity to zero or replace a scale-down operation or migration.
-
-For three AZs, add a `zones` entry with separate Node/Pod CIDRs and a matching `fixed_replicas_by_zone` entry, with at least one node per zone. Autoscaler-managed plans have 27 additions. Confirm the third AZ's services and instance types first.
+For three AZs, add matching entries to `zones` and `fixed_replicas_by_zone` with separate Node/Pod CIDRs, and first confirm the additional AZ's service and instance availability.
 
 #### 4.2.3 Expected Deployment Results
 
+The two-AZ example creates **21 cloud resources and one Terraform helper**, initially with three Ready Workers: two fixed nodes and one elastic node. See Section 3.1 for the resource inventory.
+
+View outputs and save the manifest needed to bind the ALB:
+
 ```bash
 terraform output
-terraform output -raw cluster_id
-terraform output -json nodepools
-terraform output -json egress
 terraform output -raw alb_instance_manifest > /tmp/vke-alb-instance.yaml
 ```
 
-The current two-AZ example has three pools; fixed outputs are indexed by AZ, such as `nodepools.fixed["cn-beijing-a"].id`. Both initial-capacity scenarios have 21 cloud resources plus one helper. Disabling template autoscaler management removes one cloud resource. Creating the ALB does not create an application or prove listener readiness; Section 4.1.4 explains other outputs and expected status.
-
-Workers, system disks, the VKE control plane, NAT, EIPs, ALB, and public traffic have corresponding charges. Running elastic nodes are also billable. Resource counts do not equal billing-item counts; cost depends on specifications, duration, and usage. Protect State, Plan, and output identities; do not commit credentials or runtime artifacts.
+Section 4.1.4 explains the outputs. After creating the ALB, deploy the application and Ingress to enable business access. Resources and traffic are billed according to specifications, duration, and usage.
 
 #### 4.2.4 Post-deployment Verification
 
-Use Section 4.2.3's local outputs for resource identities and the ALBInstance manifest, obtain the target cluster's kubeconfig, and perform Section 4.1.4's console relationship, component, DNS, public-IP, egress, and elastic node checks. Scenario one starts with three Workers; scenario two starts with two fixed Workers and zero elastic Workers, and capacity load should trigger expansion from zero. Verify CPU metrics and replica changes separately when using HPA. For three AZs, include the third AZ's subnets, egress, fixed nodes, and ALB ingress. Cloud verification locates resources through stack outputs; local verification uses Terraform outputs. The remaining operations are identical.
+Obtain the target cluster's kubeconfig from VKE. Enter the template root on an operational host with private API connectivity. These commands use the dedicated test namespace `vke-demo`; confirm there are no existing business objects with the same names.
 
-**Checks after updates.** Using the same State and valid inputs, run two consecutive plans after resources stabilize:
+Inspect the cluster and deploy the example application:
 
 ```bash
-for n in 1 2; do
-  rc=0
-  terraform plan -input=false -detailed-exitcode || rc=$?
-  printf '%s %s\n' "$n" "$rc"
-  if [ "$rc" -ne 0 ]; then break; fi
+export KUBECONFIG="/secure/path/to/kubeconfig"
+kubectl get nodes -L workload-pool,topology.kubernetes.io/zone
+kubectl -n kube-system get pods
+kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
+kubectl apply -f /tmp/vke-alb-instance.yaml
+kubectl apply -f examples/app.yaml
+kubectl -n vke-demo rollout status deployment/web --timeout=300s
+kubectl -n vke-demo get endpoints web
+kubectl -n vke-demo exec deployment/web -- nslookup kubernetes.default.svc.cluster.local
+```
+
+| Check | Expected result | Check first on failure |
+|---|---|---|
+| Nodes and components | Three Ready Workers, with fixed nodes in A/C; four specified addons and supporting components healthy in VKE component management; metrics API available | Pod events, image pulls, component status |
+| Application and DNS | Two Ready application replicas, Service Endpoints matching Ready Pods, and successful cluster-domain resolution | Application events, CoreDNS |
+| Node/Pod egress | Probes below return `egress.node.address` and `egress.pod.address` respectively in both AZs | DNS, echo service, SNAT source subnets and EIPs |
+| Public ALB ingress | Both AZs' public IPs return HTTP 200 and the Nginx page; HTTP 80 backends match Ready Pods | ALBInstance, IngressClass, listeners, backend health |
+
+**Egress check**: create an ordinary Pod and a hostNetwork Pod in each AZ. The output labelled `pod` must match the Pod EIP, and `node` must match the Node EIP. Probes are removed when they finish normally:
+
+```bash
+for zone in cn-beijing-a cn-beijing-c; do
+  for role in pod node; do
+    host_network=false
+    [ "$role" != node ] || host_network=true
+    printf '%s %s\n' "$zone" "$role"
+    kubectl -n vke-demo run "egress-${role}-${zone##*-}" \
+      --image=public.ecr.aws/docker/library/nginx:1.28-alpine \
+      --restart=Never --rm -i --pod-running-timeout=180s \
+      --overrides="{\"spec\":{\"hostNetwork\":${host_network},\"dnsPolicy\":\"ClusterFirstWithHostNet\",\"nodeSelector\":{\"workload-pool\":\"fixed\",\"topology.kubernetes.io/zone\":\"${zone}\"}}}" \
+      --command -- curl -fsS --connect-timeout 5 --max-time 30 https://checkip.amazonaws.com
+  done
 done
 ```
 
-Both must return 0. Exit 2 means planned changes; 1 means an error. Inspect the cause first. Use the same environment and latest inputs after parameter changes.
+On failure, inspect probe events and logs, then delete any remaining Pods by name. Include the third AZ in the loop when using three AZs.
 
-Plans rerun availability preflight. If confirmation expiry or inventory changes cause failure, recheck creation prerequisites rather than assuming resource drift. The remote business verification did not cover no-change Plan, parameter updates, expansion from zero, or the platform's complete lifecycle; these are expected checks for the target environment.
+**Public access check**: obtain each AZ's public IP in the ALB console and run the command below from outside the cluster, replacing the placeholder for each IP. The default instance hostname cannot be used directly for business access; see Section 4.1.4 for custom-domain configuration.
 
-In a test environment, change `egress_bandwidth` from 10 to 11, verify only two outbound EIPs update in place, apply, and independently read the same IDs and actual bandwidth. Run two plans, then roll back to 10 and repeat. Cloud users update stack parameters; local users edit their controlled variable file and generate a fresh plan.
+```bash
+curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
+  -w '\nHTTP %{http_code}\n' "http://<ALB-public-IP>/"
+```
 
-Fixed pools changed from a singleton to per-AZ instances. Replace old `fixed_replicas` with the map and update `.fixed.id` consumers. Existing pools need a staged migration: create new pools, confirm Ready, drain workloads, then remove old pools. Changing the nonce can reconcile missing matching components; it does not implement automatic upgrades.
+Autoscaling and HPA verification are optional; see items 4 and 5 in Section 4.1.4. After basic checks, follow Section 4.2.5 to remove test objects. You can retain the infrastructure for continued use.
 
 #### 4.2.5 Destroy Resources
 
-Back up needed application data and remove user-created applications, Ingress, and ALBInstance, allowing the controller to reclaim listeners, backend groups, and rules. These Kubernetes commands are only for the bundled test environment:
+Back up required application data and use the original deployment directory, region, Workspace, State, and parameters.
 
-```bash
-kubectl delete -f examples/hpa.yaml --ignore-not-found
-kubectl -n vke-demo delete -f examples/node-scale-test.yaml --ignore-not-found
-kubectl -n vke-demo delete deployment/hpa-load --ignore-not-found
-kubectl -n vke-demo delete ingress web --ignore-not-found --wait=true
-kubectl delete albinstance vke-alb --ignore-not-found --wait=true
-kubectl delete -f examples/app.yaml --ignore-not-found
-```
+1. **Remove application ingress**
 
-`app.yaml` includes the test namespace. If it contains other workloads, remove only the objects created for this test. Also remove failed egress probes using the names printed by the script. Check that `kubectl get ingressclass vke-alb` no longer returns that object, and confirm in ALB that test listeners, rules, and backend groups are reclaimed while the instance remains, before deleting infrastructure.
+   These commands apply only to this README's dedicated test environment:
 
-For fresh environments created with ALB protection false:
+   ```bash
+   kubectl -n vke-demo delete ingress web --ignore-not-found --wait=true
+   kubectl delete albinstance vke-alb --ignore-not-found --wait=true
+   kubectl delete -f examples/app.yaml --ignore-not-found
+   ```
 
-```bash
-terraform plan -var='vke_delete_protection_enabled=false' -out=exit.tfplan
-terraform show exit.tfplan
-# Continue only with expected in-place updates and no unexpected replacements:
-terraform apply exit.tfplan
-terraform plan -destroy -var='vke_delete_protection_enabled=false'
-terraform destroy -var='vke_delete_protection_enabled=false'
-```
+   `app.yaml` deletes the entire test namespace. If it contains other workloads, remove objects individually. Confirm that the controller has reclaimed IngressClass, listeners, rules, and backend groups before destroying infrastructure.
 
-Keep the region, Workspace, State, and other inputs unchanged. InfraManager users first update VKE protection to false, then disable stack deletion protection and delete cloud resources; no local State download is required.
+2. **Disable deletion protection and destroy**
 
-For existing ALBs with cloud protection true, retain original inputs rather than applying the new defaults. Use `scripts/prepare-destroy.py` locally. It depends on `scripts/preflight.py` in the same directory, Python 3, Terraform, and inherited cloud credentials. It needs target cluster/ALB read access plus VKE `UpdateClusterConfig` and ALB `ModifyLoadBalancerAttributes` permissions. Run from the same deployment directory, replacing the region with your actual region:
+   Use the existing script to inspect and disable protection on the target VKE/ALB, then review the deletion plan. Replace the region with your actual region:
 
-```bash
-python3 scripts/prepare-destroy.py --root . --region cn-beijing
-# Confirm cluster and ALB ownership in the same VPC and the protection changes:
-python3 scripts/prepare-destroy.py --root . --region cn-beijing --apply
-terraform plan -destroy
-terraform destroy
-```
+   ```bash
+   python3 scripts/prepare-destroy.py --root . --region cn-beijing
+   # Run after reviewing target resources and protection changes:
+   python3 scripts/prepare-destroy.py --root . --region cn-beijing --apply
+   terraform plan -destroy
+   terraform destroy
+   ```
 
-The script is read-only by default. `--apply` only disables protection on existing objects; it does not delete resources or change State. The default timeout is 600 seconds; success returns 0 and failure returns 1. Repeated runs first read current status. Any completed protection changes persist after failure, so inspect before retrying. Proceed directly to Destroy without an intervening ordinary Apply. Cloud users can confirm protection is disabled in the relevant service consoles before deleting the target stack. Stop at unexpected replacement plans. On failure, retain State and inspect cloud tasks and remnants rather than removing State first.
+   `scripts/prepare-destroy.py` depends on `scripts/preflight.py` in the same directory, Python 3, Terraform, and cloud credentials, with target VKE/ALB read and protection-update permissions. It is read-only by default; `--apply` only disables protection. The timeout is 600 seconds; success returns 0 and failure returns 1. **Use this procedure for existing protected ALBs as well, instead of disabling protection through an ordinary Apply.** Proceed directly to destruction afterwards to avoid re-enabling protection.
 
-CoreDNS, metrics-server, and platform components are reclaimed with the cluster, without independent DeleteAddon calls. Afterwards, use original identifiers and the VPC to check the cluster, pools, Workers, NICs, subnets, NAT, SNAT, two outbound EIPs, per-AZ ALB ingress EIPs, and ALB subresources: four EIPs for two AZs, five for three AZs. Existing SSH keys and the State backend are outside deletion scope; separately revoke short-lived kubeconfig and remove temporary test files. Review the deletion inventory because destruction removes Terraform-managed resources. Retain the original region, Workspace, State, and other parameters. The remote business verification did not perform infrastructure Destroy.
+   InfraManager users disable VKE, ALB, and stack deletion protection in the consoles, then delete the stack and select deletion of cloud resources.
+
+3. **Confirm cleanup**
+
+   In the consoles, confirm reclamation of the cluster, Workers, NICs, network, NAT/SNAT, EIPs, and ALB resources. Cluster components are reclaimed with the cluster. Existing SSH keys and the State backend are outside deletion scope. On destruction failure, retain State and inspect cloud tasks and remaining resources.
 
 ## 5. Summary
 

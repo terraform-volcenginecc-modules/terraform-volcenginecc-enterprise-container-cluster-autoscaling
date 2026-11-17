@@ -153,7 +153,7 @@ module "nodepools" {
 
 模块内固定池使用 `fixed_replicas_by_zone` 的 AZ 名称执行 `for_each`，每池只绑定对应的一个 Node 子网。AZ 键在 Plan 时已知，不依赖尚未创建的子网 ID；固定容量的 AZ 键必须与选定子网完全一致，每区至少一个节点。共享弹性池使用所有 Node 子网和 `ZoneBalance`，仅忽略 `auto_scaling.desired_replicas` 的外部变化，最小与最大容量仍由 Terraform 管理。
 
-新环境的创建顺序为网络 → 集群 → 固定池与弹性池 → 可卸载插件 → Required 组件协调与回查；ALB 为独立网络分支。CoreDNS、metrics-server 由集群拥有，可卸载插件由 Terraform 管理；存量固定池迁移与退出步骤见第 4.2.4、4.2.5 节。
+新环境的创建顺序为网络 → 集群 → 固定池与弹性池 → 可卸载插件 → Required 组件协调与回查；ALB 为独立网络分支。CoreDNS、metrics-server 由集群拥有，可卸载插件由 Terraform 管理；退出步骤见第 4.2.5 节。
 
 ## 4. 使用说明
 
@@ -167,15 +167,35 @@ InfraManager 是火山引擎提供的 Terraform 托管工作台，更多产品�
 
 #### 4.1.1 准备权限
 
-在目标账号开通 VKE、ECS、VPC、NAT、EIP 和 ALB，确认项目、余额、各 AZ 的实例库存、磁盘、ENI、Pod IP 和节点配额。首次使用时，按服务控制台提示准备 VKE、ALB 及 NAT 的服务关联角色，包括 `ServiceRoleForNatGateway`。
+部署前，请准备目标账号的服务、部署权限和节点登录凭据，并确认部署后的集群访问条件。可按以下顺序检查：
 
-执行身份需要 InfraManager 资源栈操作权限、CloudControl 权限，以及这些云资源的创建、读取、更新、删除、标签和关联权限。预检需要 VKE `ListSupportedResourceTypes`、`ListSupportedAddons`、`ListSupportedImages` 和 ECS `DescribeAvailableResource` 读取权限；组件协调器另需 VKE `ListClusters`、`ListAddons`、`CreateAddon`。密钥登录时准备目标地域已有的 ECS SSH 密钥对，只输入名称，不提供私钥；密码登录时按第 4.2.1 节配置节点密码。
+1. **开通服务并检查配额**
 
-**平台执行器需要 `/bin/sh`、Python 3、VKE/ECS HTTPS API 访问及可被子进程继承的部署凭据**。`hashicorp/external ~> 2.3` Provider 在 Plan 阶段运行 `scripts/preflight.py`，组件协调器在 Apply 阶段运行 `scripts/reconcile-required-addons.py`，后者依赖同目录的 `scripts/preflight.py`。临时身份还需传递 `VOLCENGINE_SESSION_TOKEN`。凭据由平台部署身份提供，不写入模板参数文件。地域版本确认的完整步骤见第 4.2.2 节。
+   在目标账号开通 VKE、ECS、VPC、NAT、EIP 和 ALB，确认目标项目、账号余额，以及各可用区的实例库存、磁盘、ENI、Pod IP 和节点配额。首次使用时，按服务控制台提示完成服务关联角色授权，涉及 VKE、ALB 和 NAT，包括 `ServiceRoleForNatGateway`。
 
-默认关闭 Kubernetes API 公网访问，后续 kubectl 需通过 VPN、同 VPC 运维主机等私网路径连接。Worker 和 Pod 需要访问镜像仓库；示例采用公开 ECR 镜像，部署前确认目标网络可拉取。
+2. **为部署身份授予云资源权限**
 
-部署后的运维身份还需取得目标集群的 Kubernetes RBAC 权限：只读查看节点、组件和指标，以及在测试命名空间管理应用、Pod、Service、Ingress、HPA，并管理集群级 ALBInstance 和 IngressClass。云资源管理权限不自动授予这些权限；仅有某个命名空间的开发权限不足以完成全部验证。
+   部署身份需要 InfraManager 资源栈操作权限、CloudControl 权限，以及上述云资源的创建、读取、更新、删除、标签和关联权限。
+
+   模板还会检查可用性并安装必要组件，因此需要 VKE `ListSupportedResourceTypes`、`ListSupportedAddons`、`ListSupportedImages`、`ListClusters`、`ListAddons`、`CreateAddon`，以及 ECS `DescribeAvailableResource` 权限。其中仅 `CreateAddon` 用于创建组件，其余接口用于读取和核对。
+
+3. **准备节点登录凭据**
+
+   选择密钥登录时，准备目标地域已有的 ECS SSH 密钥对，模板只填写密钥对名称，不提供私钥。选择密码登录时，按第 4.2.1 节配置节点密码。
+
+4. **确认平台能够运行模板**
+
+   平台执行环境需提供 `/bin/sh`、Python 3，并能访问 VKE/ECS HTTPS API。部署凭据由平台部署身份提供，且需供模板调用的子进程使用；临时凭据还需传递 `VOLCENGINE_SESSION_TOKEN`，不要将凭据写入模板参数文件。
+
+   模板在 Plan 阶段通过 `hashicorp/external ~> 2.3` 运行 `scripts/preflight.py`，在 Apply 阶段运行 `scripts/reconcile-required-addons.py`；后者依赖同目录的 `scripts/preflight.py`，上传模板时须保留这些文件。地域版本确认步骤见第 4.2.2 节。
+
+5. **准备集群连接和镜像访问**
+
+   Kubernetes API 默认关闭公网访问，部署后使用 kubectl 时，需通过 VPN 或同 VPC 运维主机等私网路径连接。Worker 和 Pod 需能访问镜像仓库；示例使用公开 ECR 镜像，请确认目标网络能够拉取。
+
+6. **为运维身份授予集群权限**
+
+   部署后验证还需要目标集群的 Kubernetes RBAC 权限，包括查看节点、组件和指标，在测试命名空间管理应用、Pod、Service、Ingress、HPA，以及管理集群级 ALBInstance 和 IngressClass。云资源权限与集群权限分别授权，仅有某个命名空间的开发权限不足以完成全部验证。
 
 #### 4.1.2 选择模板
 
@@ -339,7 +359,7 @@ export VOLCENGINE_REGION="cn-beijing"
 
 临时凭据另设置 `VOLCENGINE_SESSION_TOKEN`。Provider 使用显式配置的 `var.region`，`VOLCENGINE_REGION` 不会覆盖参数文件中的地域；预检也使用 Terraform 生效的地域。模板不生成 Kubeconfig。
 
-**敏感业务变量**：`node_password` 为敏感字段，用于 Password 模式的 Worker 系统登录，建议通过环境变量注入，不要写入 `terraform.tfvars`：
+**敏感业务变量**：`node_password` 为敏感字段，用于 Password 模式的 Worker 系统登录。原始密码需为 8–30 位，至少包含大写字母、小写字母、数字、特殊字符中的三类；特殊字符仅支持 `()~!@#$%^&*_+-=`。建议通过环境变量注入，不要写入 `terraform.tfvars`：
 
 ```bash
 export TF_VAR_node_password="<your-strong-node-password>"
@@ -347,7 +367,7 @@ export TF_VAR_node_password="<your-strong-node-password>"
 
 先移除参数文件中的 `node_password` 赋值，再注入环境变量；`terraform.tfvars` 或 `-var-file` 的同名赋值优先于 `TF_VAR_*`。Password 模式同时设置 `node_login_method="Password"`、`ssh_key_pair_name=null`。SshKeyPair 模式清除密码环境变量、设置 `node_password=null`，并提供已有密钥对名称，不传私钥。密码使用原文，模板自动 Base64 编码；Base64 不是加密，密码及编码值可能保存在 State、Plan 和 JSON 展示中，须保护这些文件和后端访问权限。
 
-**重点参数**：默认值来自 `variables.tf`。当前 `terraform.tfvars` 是北京 A/C、每区一个固定节点、初始一个弹性节点、`ecs.g4i.4xlarge`、Kubernetes 1.32 确认记录及指定插件版本的示例，并选择 Password 模式。这些均不代表目标账号当前可用；文件还需显式补上必填 `kubernetes_version`，更新确认记录并移除密码占位赋值。第 4.2.2 节给出完整必填参数示例。
+**重点参数**：默认值来自 `variables.tf`。当前 `terraform.tfvars` 是北京 A/C、每区一个固定节点、初始一个弹性节点、`ecs.g4i.4xlarge`、Kubernetes 1.32 确认记录及指定插件版本的示例，并选择 Password 模式。这些均不代表目标账号当前可用；文件还需显式补上必填 `kubernetes_version`，更新确认记录并移除密码占位赋值。第 4.2.2 节给出基于此文件的部署示例。
 
 | 参数 | 默认值 / 入口 | 说明 |
 |---|---|---|
@@ -387,192 +407,148 @@ Node/Pod 子网均需满足地址容量要求。Service 网段与外部连接网
 
 #### 4.2.2 场景化部署示例
 
-初始化与校验：
+以下以新建北京 A/C 双 AZ 集群为例，每区一个固定节点，初始一个弹性节点。
 
-```bash
-terraform init
-terraform fmt -check -recursive
-terraform validate
-```
+1. **准备参数**
 
-节点登录配置示例（固定池和弹性池共用，任选一种）：
+   使用 `terraform.tfvars` 中的网络、节点容量和插件配置，按第 4.2.1 节核对规格、版本及登录凭据。将 `name_prefix` 改为本次环境的唯一值，并补充或更新以下参数：
 
-```hcl
-# 密钥模式：替换当前参数文件中的 Password 模式。
-node_login_method = "SshKeyPair"
-ssh_key_pair_name = "<existing-regional-key-pair>"
-node_password     = null
-```
+   ```hcl
+   kubernetes_version = "1.32"
+   kubernetes_version_confirmation = {
+     region           = "cn-beijing"
+     version          = "1.32"
+     resolved_version = "<verified-full-Kubernetes-version>"
+     verified_at_utc  = "<actual-ISO8601-verification-time-with-timezone>"
+   }
+   ```
 
-```hcl
-# 密码模式：移除参数文件的 node_password 赋值，使用第 4.2.1 节的环境变量。
-node_login_method = "Password"
-ssh_key_pair_name = null
-```
+   在目标地域 VKE 创建集群页面核对完整版本，将占位值替换为实际版本和带时区核对时间，确认记录有效期为 24 小时。当前示例使用 Password 模式，须删除 `node_password` 的占位赋值（`REPLACE_ME`），再按第 4.2.1 节注入密码。
 
-`node_password` 默认是 `null`，但 Password 模式必须提供有效密码。原始密码长度 8–30，至少包含大写字母、小写字母、数字、特殊字符中的三类；特殊字符仅支持 `()~!@#$%^&*_+-=`，不能以 `/` 或 `$6$` 开头。两种凭据互斥，配置不符会阻止 Plan。`terraform.tfvars` 中的 `REPLACE_ME` 无法通过校验，使用环境变量时须先删除该赋值。
+2. **初始化与校验**
 
-切换登录模式会修改节点池配置，不代表存量节点已完成凭据切换；按 VKE 节点更新流程验证存量节点及新扩容节点的实际登录结果。
+   在模板根目录执行：
 
-**场景一：双 AZ 底座。** 在目标地域 VKE 控制台进入创建集群页面，核对可选的 Kubernetes 次版本及对应完整版本，记录实际带时区核对时间。确认记录只能使用真实核对结果，有效期 24 小时；缺失、未来时间、无时区或地域/版本不匹配会阻断预检。更换地域或版本须重新核对，不能仅更新时间延长旧记录。
+   ```bash
+   terraform init
+   terraform fmt -check -recursive
+   terraform validate
+   ```
 
-在参数文件中填写下列必填配置，前缀改为本次环境的唯一值，版本、规格及插件替换为目标地域已确认的值。完整版本和核对时间为占位值，替换后才能部署；登录参数按前面的二选一示例补充，密码只通过环境变量或平台敏感参数提供：
+3. **检查计划并部署**
 
-```hcl
-region      = "cn-beijing"
-name_prefix = "vke-demo"
-kubernetes_version = "1.32"
-kubernetes_version_confirmation = {
-  region           = "cn-beijing"
-  version          = "1.32"
-  resolved_version = "<verified-full-Kubernetes-version>"
-  verified_at_utc  = "<actual-ISO8601-verification-time-with-timezone>"
-}
-zones = [
-  { zone_id = "cn-beijing-a", node_cidr = "10.0.0.0/24", pod_cidr = "10.0.16.0/20" },
-  { zone_id = "cn-beijing-c", node_cidr = "10.0.1.0/24", pod_cidr = "10.0.32.0/20" },
-]
-fixed_replicas_by_zone = {
-  cn-beijing-a = 1
-  cn-beijing-c = 1
-}
-instance_types = ["ecs.g4i.4xlarge"]
-addon_versions = {
-  prometheus-agent      = "v3.10.0-vke.1.30"
-  log-collector         = "v2.3.3"
-  node-problem-detector = "v1.36.4-vke.1"
-  cluster-autoscaler    = "v1.30.3-vke.15"
-}
-required_addons = {
-  core-dns = {
-    version          = "1.12.4"
-    deploy_mode      = "Unmanaged"
-    deploy_node_type = "Node"
-  }
-  metrics-server = {
-    version          = "v0.7.1-vke.6"
-    deploy_mode      = "Unmanaged"
-    deploy_node_type = "Node"
-  }
-}
-elastic_initial_replicas = 1
-elastic_min_replicas     = 0
-elastic_max_replicas     = 10
-# 按前面的登录示例补充 node_login_method 及对应凭据。
-```
+   ```bash
+   terraform plan -input=false -out=deploy.tfplan
+   terraform show deploy.tfplan
+   # 确认资源及参数符合预期后执行：
+   python3 scripts/apply-checked.py deploy.tfplan
+   ```
 
-初始化后，Plan 自动预检；审查计划后，通过 `scripts/apply-checked.py` 复检部署。该脚本依赖同目录的 `scripts/preflight.py` 和 PATH 中的 Terraform，重新查询保存计划的生效参数后执行该计划，复检失败返回 1 且不启动 Apply。重复运行仍受 Terraform 计划有效性检查约束：
+   Plan 会检查规格库存、插件和镜像兼容性；复检脚本依赖同目录的 `scripts/preflight.py`，在 Apply 前再次核对可用性，失败时停止部署。库存检查不预留容量。
 
-```bash
-terraform plan -input=false -out=deploy.tfplan
-terraform show deploy.tfplan
-# 审查计划后执行：
-python3 scripts/apply-checked.py deploy.tfplan
-```
-
-Terraform 将最终生效的参数传入预检，逐 AZ 检查 VKE 规格支持、ECS 实时库存、所选 Addon 版本及镜像兼容性。FAIL 或 UNKNOWN 会在创建云资源前阻断 Plan。地域 Kubernetes 可创建版本尚无已验证的公开查询接口，必须提供明确确认记录，不能用 Addon 兼容性推断。平台组件检查是否存在兼容候选，实际安装版本仍由服务管理。库存只是查询时的快照，不是容量预留；复检入口会在 Apply 前按保存计划的参数重新查询。首次 Plan 仍应为 22 项受管资源新增；Apply 补齐两项协调组件，无需另行运行 `scripts/bootstrap-dns.py`。
-
-**场景二：验证仅固定基线。** 在另一个空 State 的独立测试环境中，使用场景一的网络和两区固定容量，仅替换前缀及初始弹性容量：
-
-```hcl
-name_prefix             = "vke-baseline-demo"
-elastic_initial_replicas = 0
-elastic_min_replicas     = 0
-elastic_max_replicas     = 10
-```
-
-将前缀改为唯一值后，完成本节初始化，执行以下命令；其余必填参数和凭证仍按场景一准备：
-
-```bash
-terraform plan -input=false -out=deploy.tfplan
-terraform show deploy.tfplan
-python3 scripts/apply-checked.py deploy.tfplan
-```
-
-新建数量仍为 22，但初始 Worker 只有两个固定节点。核对两区 Ready、DNS 和出口；该场景只验证初始固定基线，启用的 autoscaler 仍可在后续负载下增加弹性节点。
-
-两种场景均面向独立新环境。已有弹性池忽略 live desired count 的变化，修改 `elastic_initial_replicas` 不会把运行中的节点数自动重置为 0，也不能用于替代缩容操作或存量迁移。
-
-三 AZ 扩展需同步增加 `zones` 条目、独立 Node/Pod CIDR 和 `fixed_replicas_by_zone` 条目，每区至少一个节点。管理 autoscaler 时为 27 项新增；第三个 AZ 必须先确认服务和规格可用。
+需要三 AZ 时，同步增加 `zones` 与 `fixed_replicas_by_zone` 条目，使用独立 Node/Pod 网段，并先确认该区服务和规格可用。
 
 #### 4.2.3 部署预期结果
 
+上述两 AZ 示例预期创建 **21 个云资源和 1 个 Terraform 辅助对象**，初始有三个 Ready Worker：两个固定节点、一个弹性节点。资源明细见第 3.1 节。
+
+查看资源输出，并保存后续绑定 ALB 所需的清单：
+
 ```bash
 terraform output
-terraform output -raw cluster_id
-terraform output -json nodepools
-terraform output -json egress
 terraform output -raw alb_instance_manifest > /tmp/vke-alb-instance.yaml
 ```
 
-当前两 AZ 示例应创建三个节点池，固定池输出按 AZ 索引，例如 `nodepools.fixed["cn-beijing-a"].id`。两种初始容量场景均为 21 个云资源及 1 个辅助对象；关闭模板管理 autoscaler 时少 1 个云资源。ALB 实例创建成功不等于已有监听器或可用应用；其他输出的含义及预期状态见第 4.1.4 节。
-
-Worker ECS、系统盘、VKE 控制面、NAT、EIP、ALB 和公网流量产生对应费用；运行中的弹性节点也会计费。资源数量不等于账单项目数量，费用以规格、使用时长和实际用量为准。保护 State、Plan 和输出中的真实资源标识，不提交凭据或运行产物。
+输出含义见第 4.1.4 节。ALB 创建后，还需部署应用和 Ingress 才能提供业务访问；资源及流量按实际规格、时长和用量计费。
 
 #### 4.2.4 部署后验证
 
-用第 4.2.3 节的本地输出获得资源标识和 ALBInstance 清单，再取得目标集群 Kubeconfig，执行第 4.1.4 节的控制台关系、组件、DNS、公网 IP、双出口及弹性节点检查。场景一初始为三个 Worker；场景二初始为两个固定 Worker、零弹性 Worker，容量负载应能触发从零扩容。HPA 使用时单独验证 CPU 指标与副本变化；三 AZ 要覆盖第三个区的子网、出口、固定节点和 ALB 入站。云上验证通过资源栈输出定位，本地通过 Terraform 输出定位，其余操作相同。
+从 VKE 控制台取得目标集群 Kubeconfig，在能连接私网 API 的运维环境中进入模板根目录。以下命令使用独立测试命名空间 `vke-demo`，执行前确认没有同名业务对象。
 
-**更新后核对。** 使用相同 State 和有效参数，在资源稳定后连续两次检查 Plan：
+先查看集群并部署示例应用：
 
 ```bash
-for n in 1 2; do
-  rc=0
-  terraform plan -input=false -detailed-exitcode || rc=$?
-  printf '%s %s\n' "$n" "$rc"
-  if [ "$rc" -ne 0 ]; then break; fi
+export KUBECONFIG="/secure/path/to/kubeconfig"
+kubectl get nodes -L workload-pool,topology.kubernetes.io/zone
+kubectl -n kube-system get pods
+kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
+kubectl apply -f /tmp/vke-alb-instance.yaml
+kubectl apply -f examples/app.yaml
+kubectl -n vke-demo rollout status deployment/web --timeout=300s
+kubectl -n vke-demo get endpoints web
+kubectl -n vke-demo exec deployment/web -- nslookup kubernetes.default.svc.cluster.local
+```
+
+| 检查项 | 预期结果 | 异常优先检查 |
+|---|---|---|
+| 节点与组件 | 三个 Worker Ready，两个固定节点分别位于 A/C；VKE 组件管理页的四个指定 Addon 及支撑组件健康，指标接口可用 | Pod 事件、镜像拉取、组件状态 |
+| 应用与 DNS | 两个应用副本 Ready，Service Endpoints 对应 Ready Pod，集群域名可解析 | 应用事件、CoreDNS |
+| Node/Pod 出口 | 下方两区探针分别返回 `egress.node.address` 与 `egress.pod.address` | DNS、回显站点、SNAT 来源子网及 EIP |
+| ALB 公网入口 | 两区公网 IP 均返回 HTTP 200 和 Nginx 页面，HTTP 80 后端对应 Ready Pod | ALBInstance、IngressClass、监听器及后端健康 |
+
+**出口检查**：每区分别创建普通 Pod 和 hostNetwork Pod，输出中的 `pod` 应匹配 Pod EIP，`node` 应匹配 Node EIP。正常结束后探针自动删除：
+
+```bash
+for zone in cn-beijing-a cn-beijing-c; do
+  for role in pod node; do
+    host_network=false
+    [ "$role" != node ] || host_network=true
+    printf '%s %s\n' "$zone" "$role"
+    kubectl -n vke-demo run "egress-${role}-${zone##*-}" \
+      --image=public.ecr.aws/docker/library/nginx:1.28-alpine \
+      --restart=Never --rm -i --pod-running-timeout=180s \
+      --overrides="{\"spec\":{\"hostNetwork\":${host_network},\"dnsPolicy\":\"ClusterFirstWithHostNet\",\"nodeSelector\":{\"workload-pool\":\"fixed\",\"topology.kubernetes.io/zone\":\"${zone}\"}}}" \
+      --command -- curl -fsS --connect-timeout 5 --max-time 30 https://checkip.amazonaws.com
+  done
 done
 ```
 
-两次均应为 0；2 表示存在计划变更，1 表示错误，先检查原因。参数更新后也要使用同一环境和最新参数执行检查。
+失败时查看探针事件和日志，并按名称删除遗留 Pod。三 AZ 配置需将第三个区加入循环。
 
-计划会重新执行可用性预检；确认记录过期或库存变化导致的失败，应先重新核对创建条件，不直接当作资源漂移。本次远程业务验证未覆盖零变更 Plan、参数更新、从零扩容和平台完整生命周期，这些步骤为目标环境的预期核对方法。
+**公网检查**：从 ALB 控制台取得各区公网 IP，在集群外逐个替换下方占位值执行。默认实例域名不能直接用于业务访问，自定义域名配置见第 4.1.4 节。
 
-可在测试环境将 `egress_bandwidth` 从 10 改为 11，审查只原地更新两枚出口 EIP，Apply 后回读相同 ID 和实际带宽，再执行两次 Plan；随后回滚 10 并重复核对。云上使用资源栈参数更新，本地修改受控参数文件后重新生成计划。
+```bash
+curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
+  -w '\nHTTP %{http_code}\n' "http://<ALB-public-IP>/"
+```
 
-固定池从旧单对象变成按 AZ 的多个实例，旧 `fixed_replicas` 参数需改为映射，旧 `.fixed.id` 输出读取方式也需调整。存量池不能直接套用新配置：先设计过渡配置，创建新池、确认 Ready、排水迁移，再删除旧池。仅改变 nonce 可重复协调同版本缺失组件，不代表支持自动升级现有组件。
+扩缩容和 HPA 属于按需验证，操作入口见第 4.1.4 节的第 4、5 项。基础自检完成后，按第 4.2.5 节清理测试对象；可保留基础设施继续使用。
 
 #### 4.2.5 销毁资源
 
-先备份需要保留的业务数据并清理自建应用、Ingress、ALBInstance，让 controller 回收监听器、后端组和规则。下面的 Kubernetes 删除命令仅适用于附带示例的测试环境：
+销毁前备份需要保留的业务数据，并使用原部署目录、地域、Workspace、State 和参数。
 
-```bash
-kubectl delete -f examples/hpa.yaml --ignore-not-found
-kubectl -n vke-demo delete -f examples/node-scale-test.yaml --ignore-not-found
-kubectl -n vke-demo delete deployment/hpa-load --ignore-not-found
-kubectl -n vke-demo delete ingress web --ignore-not-found --wait=true
-kubectl delete albinstance vke-alb --ignore-not-found --wait=true
-kubectl delete -f examples/app.yaml --ignore-not-found
-```
+1. **清理应用入口**
 
-`app.yaml` 包含测试命名空间；如果其中已有其他业务，应改为逐项清理本次创建的对象。另按脚本打印的名称删除失败时保留的出口探针。检查 `kubectl get ingressclass vke-alb` 已不再返回该对象，并在 ALB 控制台确认测试监听器、规则和后端组已回收、ALB 实例仍保留，再处理基础设施。
+   以下命令仅适用于本 README 的独立测试环境：
 
-对创建时 ALB 保护为 false 的新环境：
+   ```bash
+   kubectl -n vke-demo delete ingress web --ignore-not-found --wait=true
+   kubectl delete albinstance vke-alb --ignore-not-found --wait=true
+   kubectl delete -f examples/app.yaml --ignore-not-found
+   ```
 
-```bash
-terraform plan -var='vke_delete_protection_enabled=false' -out=exit.tfplan
-terraform show exit.tfplan
-# 确认只有预期原地更新、没有非预期替换后：
-terraform apply exit.tfplan
-terraform plan -destroy -var='vke_delete_protection_enabled=false'
-terraform destroy -var='vke_delete_protection_enabled=false'
-```
+   `app.yaml` 会删除整个测试命名空间；其中有其他业务时，应逐项清理。确认控制器已回收 IngressClass、监听器、规则和后端组，再销毁基础设施。
 
-保持原地域、Workspace、State 和其他输入不变。InfraManager 用户先更新 VKE 保护参数为 false，再关闭平台栈删除保护并选择删除云资源，无需下载本地 State。
+2. **关闭删除保护并销毁**
 
-已有 ALB 云端保护为 true 的环境，应保持原有输入，不要直接应用新的默认值。本地先使用 `scripts/prepare-destroy.py`，该脚本依赖同目录的 `scripts/preflight.py`、Python 3、Terraform 和继承的云凭据；需读取目标集群/ALB，并有 VKE `UpdateClusterConfig`、ALB `ModifyLoadBalancerAttributes` 权限。在同一部署目录运行，将地域替换为实际值：
+   使用现有脚本检查并关闭目标 VKE/ALB 的删除保护，再审查删除计划。将地域替换为实际值：
 
-```bash
-python3 scripts/prepare-destroy.py --root . --region cn-beijing
-# 核对同一 VPC 内的集群和 ALB，以及关闭保护动作后：
-python3 scripts/prepare-destroy.py --root . --region cn-beijing --apply
-terraform plan -destroy
-terraform destroy
-```
+   ```bash
+   python3 scripts/prepare-destroy.py --root . --region cn-beijing
+   # 核对目标资源及关闭保护动作后执行：
+   python3 scripts/prepare-destroy.py --root . --region cn-beijing --apply
+   terraform plan -destroy
+   terraform destroy
+   ```
 
-脚本默认只读，`--apply` 只关闭已有对象的保护，不删除资源、不修改 State；默认超时 600 秒，成功返回 0，失败返回 1。重复运行先读取当前状态；失败后已完成的保护变更仍有效，须先回查再重试。准备完成后直接执行 Destroy，中间不要再普通 Apply。云上可在相应服务控制台确认保护已关闭后删除目标资源栈。任何非预期替换都先停止；失败时保留 State 并核对云端任务和残留，不先移除 State。
+   `scripts/prepare-destroy.py` 依赖同目录的 `scripts/preflight.py`、Python 3、Terraform 和云凭据，需具备目标 VKE/ALB 的读取与保护修改权限。默认只读，`--apply` 仅关闭保护；超时 600 秒，成功返回 0，失败返回 1。**已有 ALB 开启保护时，也按此流程处理，不通过普通 Apply 关闭保护**；准备完成后直接销毁，避免保护被重新开启。
 
-CoreDNS、metrics-server 及平台组件随集群回收，不单独调用 DeleteAddon。完成后按原资源标识和 VPC 核对集群、节点池、Worker ECS、网卡、子网、NAT、SNAT、两枚出口 EIP、各区 ALB 入站 EIP 及 ALB 子资源；两 AZ 共四枚 EIP，三 AZ 共五枚。已有 SSH 密钥对和 State 后端不在模板删除范围；短期 Kubeconfig 和临时测试文件另行撤销或清理。销毁会删除 Terraform 管理的资源，须先审核删除清单，并保留原地域、Workspace、State 和其他参数；本次远程业务验证未执行基础资源 Destroy。
+   InfraManager 用户在控制台关闭 VKE、ALB 及资源栈的删除保护后，删除资源栈并选择删除云资源。
+
+3. **核对清理结果**
+
+   在控制台确认集群、Worker、网卡、网络、NAT/SNAT、EIP 和 ALB 相关资源已回收。集群组件随集群删除，已有 SSH 密钥对和 State 后端不在模板删除范围。销毁失败时保留 State，先核对云端任务和残留。
 
 ## 5. 总结
 
