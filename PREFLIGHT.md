@@ -8,9 +8,9 @@ Terraform Plan invokes Python 3 through `hashicorp/external ~> 2.3`, passing res
 
 当前没有已验证、可直接使用的公开地域可创建版本查询接口。`ListSupportedResourceTypes` 只返回 ECS/AZ；Addon 兼容范围、已有集群和全局版本发布记录均不能证明当前地域允许创建某版本。
 
-部署身份需在目标地域 VKE 创建集群页面或经验证的服务响应中核对可选的 Kubernetes minor 版本及对应完整版本，并留下证据来源，再填写以下参数。不要填写未核实的完整版本或仅更新时间以延长过期证据。确认有效期为 24 小时，未来时间、无时区时间、地域或版本不匹配均不能通过。
+部署身份需在目标地域 VKE 创建集群页面中核对可选的 Kubernetes minor 版本及对应完整版本，再填写以下必填参数。不要填写未核实的完整版本或仅更新时间以延长过期记录。确认有效期为 24 小时，未来时间、无时区时间、地域或版本不匹配均不能通过。
 
-Supply `kubernetes_version_confirmation` after checking the target region's cluster-creation page using the deployment identity, or a verified service response. Record the full Kubernetes version and evidence source. The confirmation is operator-supplied evidence, not an automatic service query. It expires after 24 hours; missing, future-dated or mismatched evidence blocks deployment.
+Supply the required `kubernetes_version_confirmation` after checking the target region's cluster-creation page using the deployment identity. Record the full Kubernetes version and actual verification time. It expires after 24 hours; missing, future-dated or mismatched values block deployment.
 
 以下是字段格式，尖括号是需要替换的占位值，并非可用证据：
 
@@ -20,7 +20,6 @@ kubernetes_version_confirmation = {
   version          = "1.32"
   resolved_version = "<verified full Kubernetes version, including patch>"
   verified_at_utc  = "<actual verification time in ISO 8601 with timezone>"
-  source           = "<reference to the target-region creation evidence>"
 }
 ```
 

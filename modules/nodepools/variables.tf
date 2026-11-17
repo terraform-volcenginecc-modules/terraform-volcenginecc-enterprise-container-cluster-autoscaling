@@ -34,9 +34,8 @@ variable "image_id" {
   type        = string
 }
 variable "node_login_method" {
-  description = "Worker OS login method shared by all pools."
+  description = "【必填】所有节点池共用的 Worker 登录方式：SshKeyPair 或 Password。"
   type        = string
-  default     = "SshKeyPair"
   nullable    = false
   validation {
     condition     = contains(["SshKeyPair", "Password"], var.node_login_method)
@@ -44,7 +43,7 @@ variable "node_login_method" {
   }
 }
 variable "ssh_key_pair_name" {
-  description = "Existing regional SSH key-pair name; null in Password mode."
+  description = "【条件必填】SshKeyPair 模式填写目标地域已有密钥对名称；Password 模式填 null。"
   type        = string
   default     = null
   validation {
@@ -53,9 +52,9 @@ variable "ssh_key_pair_name" {
   }
 }
 variable "node_password" {
-  description = "Raw OS password, Base64-encoded for VKE; replace the public example default and set null in SshKeyPair mode."
+  description = "【条件必填、敏感】Password 模式填写原始系统密码，模板会为 VKE 自动进行 Base64 编码；SshKeyPair 模式填 null。"
   type        = string
-  default     = "ReplaceWithStrongPassword123"
+  default     = null
   sensitive   = true
   validation {
     condition = var.node_password == null ? true : try(

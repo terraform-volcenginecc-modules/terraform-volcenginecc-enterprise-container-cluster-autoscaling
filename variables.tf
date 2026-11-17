@@ -1,13 +1,11 @@
 variable "region" {
-  description = "Target Volcengine region."
+  description = "【必填】目标火山引擎地域，必须与 zones 和 kubernetes_version_confirmation.region 一致。"
   type        = string
-  default     = "cn-beijing"
 }
 
 variable "name_prefix" {
-  description = "Unique environment prefix for resource names."
+  description = "【必填】资源名称前缀，同一账号和地域内应保持唯一。"
   type        = string
-  default     = "vke"
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,35}$", var.name_prefix))
     error_message = "Use 2-36 lowercase letters, digits and hyphens, starting with a letter."
@@ -38,16 +36,12 @@ variable "vpc_cidr" {
 }
 
 variable "zones" {
-  description = "Two or three target AZs and disjoint Node/Pod CIDRs. Verify service availability first."
+  description = "【必填】目标地域内的 2–3 个可用区，以及各区互不重叠的 Node/Pod 网段。"
   type = list(object({
     zone_id   = string
     node_cidr = string
     pod_cidr  = string
   }))
-  default = [
-    { zone_id = "cn-beijing-a", node_cidr = "10.0.0.0/24", pod_cidr = "10.0.16.0/20" },
-    { zone_id = "cn-beijing-c", node_cidr = "10.0.1.0/24", pod_cidr = "10.0.32.0/20" },
-  ]
   validation {
     condition = (
       length(var.zones) >= 2 && length(var.zones) <= 3 &&
@@ -69,9 +63,8 @@ variable "service_cidr" {
 }
 
 variable "kubernetes_version" {
-  description = "Kubernetes minor version. Preflight requires a current confirmation that this region permits creating it."
+  description = "【必填】Kubernetes 次版本，必须与 kubernetes_version_confirmation.version 一致。"
   type        = string
-  default     = "1.32"
   validation {
     condition     = can(regex("^1\\.[0-9]+$", var.kubernetes_version))
     error_message = "Use x.xx format, such as 1.32."
@@ -79,15 +72,13 @@ variable "kubernetes_version" {
 }
 
 variable "kubernetes_version_confirmation" {
-  description = "Operator confirmation from the target-region VKE create-cluster page or a verified service response. Valid for 24 hours; null blocks deployment."
+  description = "【必填】目标地域 Kubernetes 创建版本确认。完整版本和核对时间须来自 VKE 创建集群页面，有效期 24 小时。"
   type = object({
     region           = string
     version          = string
     resolved_version = string
     verified_at_utc  = string
-    source           = string
   })
-  default = null
 }
 
 variable "vke_delete_protection_enabled" {
@@ -139,9 +130,8 @@ variable "alb_bandwidth" {
 }
 
 variable "instance_types" {
-  description = "1-10 VKE-compatible ECS types available in every selected AZ."
+  description = "【必填】1–10 个在全部所选可用区中受 VKE 支持且有库存的 ECS 规格。"
   type        = list(string)
-  default     = ["ecs.g4il.4xlarge"]
   nullable    = false
   validation {
     condition = (
@@ -154,15 +144,14 @@ variable "instance_types" {
 }
 
 variable "image_id" {
-  description = "Verified VKE-compatible image ID. Null uses the VKE default for a single instance type."
+  description = "【条件必填】选择多个 instance_types 时填写所有规格共同支持的镜像 ID；单规格可填 null，使用 VKE 默认镜像。"
   type        = string
   default     = null
 }
 
 variable "node_login_method" {
-  description = "Worker OS login method shared by fixed and elastic pools: SshKeyPair or Password."
+  description = "【必填】固定池和弹性池共用的 Worker 登录方式：SshKeyPair 或 Password。"
   type        = string
-  default     = "SshKeyPair"
   nullable    = false
   validation {
     condition     = contains(["SshKeyPair", "Password"], var.node_login_method)
@@ -171,7 +160,7 @@ variable "node_login_method" {
 }
 
 variable "ssh_key_pair_name" {
-  description = "Existing regional ECS SSH key-pair name for SshKeyPair mode; null in Password mode. Never provide the private key."
+  description = "【条件必填】node_login_method 为 SshKeyPair 时填写目标地域已有的 ECS SSH 密钥对名称；Password 模式填 null，禁止传入私钥。"
   type        = string
   default     = null
   validation {
@@ -181,9 +170,9 @@ variable "ssh_key_pair_name" {
 }
 
 variable "node_password" {
-  description = "Raw worker OS password, encoded as Base64 for VKE. Public example default: replace for deployment; explicitly set null in SshKeyPair mode."
+  description = "【条件必填、敏感】node_login_method 为 Password 时填写 Worker 原始系统密码，模板会为 VKE 自动进行 Base64 编码；SshKeyPair 模式填 null。"
   type        = string
-  default     = "ReplaceWithStrongPassword123"
+  default     = null
   sensitive   = true
   validation {
     condition = var.node_password == null ? true : try(
@@ -218,13 +207,9 @@ variable "system_volume_type" {
 }
 
 variable "fixed_replicas_by_zone" {
-  description = "Fixed nodes per AZ, with no autoscaling. Keys must exactly match zones; each AZ needs at least one node."
+  description = "【必填】各可用区固定节点数，键必须与 zones 完全一致，每区至少 1 个节点。"
   type        = map(number)
   nullable    = false
-  default = {
-    cn-beijing-a = 1
-    cn-beijing-c = 1
-  }
   validation {
     condition = try(
       length(var.fixed_replicas_by_zone) > 0 &&
@@ -257,9 +242,8 @@ variable "elastic_max_replicas" {
 }
 
 variable "addon_versions" {
-  description = "Explicit versions of all enabled independently deletable addons. Preflight checks Kubernetes compatibility."
+  description = "【必填】所有启用且可独立卸载的 Addon 版本；预检会核对 Kubernetes 兼容性。"
   type        = map(string)
-  default     = {}
   validation {
     condition = alltrue([
       for k, v in var.addon_versions :
@@ -270,24 +254,12 @@ variable "addon_versions" {
 }
 
 variable "required_addons" {
-  description = "Cluster-owned Required addons reconciled by the bundled Python script and removed only with the VKE cluster."
+  description = "【必填】集群必需的 CoreDNS 和 metrics-server 版本及部署方式；预检会核对 Kubernetes 兼容性。"
   type = map(object({
     version          = string
     deploy_mode      = string
     deploy_node_type = optional(string)
   }))
-  default = {
-    core-dns = {
-      version          = "1.12.4"
-      deploy_mode      = "Unmanaged"
-      deploy_node_type = "Node"
-    }
-    metrics-server = {
-      version          = "v0.7.1-vke.6"
-      deploy_mode      = "Unmanaged"
-      deploy_node_type = "Node"
-    }
-  }
   validation {
     condition = (
       toset(keys(var.required_addons)) == toset(["core-dns", "metrics-server"]) &&

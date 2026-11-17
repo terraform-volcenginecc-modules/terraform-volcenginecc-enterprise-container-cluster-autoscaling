@@ -213,9 +213,6 @@ def check_confirmation(config, now):
         return "UNKNOWN", "Provide a current target-region Kubernetes creation confirmation.", None
     if record.get("region") != config["region"] or record.get("version") != config["kubernetes_version"]:
         return "FAIL", "Kubernetes confirmation does not match the selected region/version.", None
-    source = record.get("source")
-    if not isinstance(source, str) or not source.strip():
-        return "UNKNOWN", "Kubernetes confirmation requires an evidence source.", None
     try:
         resolved = record["resolved_version"]
         if not isinstance(resolved, str) or not re.fullmatch(r"v?1\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", resolved):
