@@ -1,17 +1,17 @@
-# Enterprise Container Infrastructure and Autoscaling on Volcengine
+# Enterprise Container Cluster Automation and Autoscaling
 
-Create a multi-AZ VKE foundation in your Volcengine account: an isolated VPC, Node/Pod subnets, separate internet egress, fixed and elastic node pools, operational addons, and a public ALB. The current example configures one fixed node in each of Beijing A/C, with a separate pool for elastic capacity. After deployment, use the bundled Kubernetes examples to configure ALB Ingress and applications, then verify public access, HPA, and node scaling.
+Build a VKE foundation for enterprise applications that can serve public traffic, covering multi-AZ networking, internet egress, elastic node capacity, load balancing, and basic operations. After deployment, run the example application to verify public access, HPA autoscaling, and elastic node scaling.
 
 ## 1. Business Background
 
 Container deployments need coordinated networking, egress, compute capacity, load balancing, and operational components. Manual provisioning can miss dependencies or mix environment settings.
 
 - **Baseline and peak capacity differ**: persistent services need stable nodes, while traffic peaks need independently expandable capacity.
-- **Network boundaries need clarity**: Node and Pod networks use separate subnets and public EIPs.
-- **Multi-AZ needs actual coverage**: listing multiple subnets does not prove that nodes are distributed across zones.
+- **Network boundaries need clarity**: Node and Pod networks use separate address ranges and public EIPs so their egress can be managed independently.
+- **Multi-AZ needs actual coverage**: listing multiple subnets does not prove that nodes span AZs; actual placement and service availability must be checked.
 - **Pod and node scaling must cooperate**: HPA adjusts replicas using metrics; cluster-autoscaler adds nodes for unschedulable Pods.
 
-This solution manages the infrastructure through Terraform while keeping application management separate.
+This solution manages networking, egress, node capacity, load balancing, and operational components together through Terraform. It reduces missing dependencies and differences between environments caused by manual configuration, makes infrastructure reproducible, and enables elastic capacity while keeping cloud infrastructure and in-cluster application management separate.
 
 ## 2. Solution Overview
 
@@ -105,14 +105,11 @@ Disabling `manage_cluster_autoscaler` gives 20 cloud resources plus one helper. 
 ├── versions.tf
 ├── preflight.tf
 ├── terraform.tfvars
-├── PREFLIGHT.md
 ├── scripts/
 │   ├── preflight.py
 │   ├── apply-checked.py
 │   ├── reconcile-required-addons.py
-│   ├── bootstrap-dns.py
-│   ├── prepare-destroy.py
-│   └── 验证公网出口.py
+│   └── prepare-destroy.py
 ├── examples/
 │   ├── app.yaml
 │   ├── hpa.yaml
@@ -209,7 +206,7 @@ Preserve relative paths for root Terraform files, `modules/`, `scripts/`, and `e
 
 Select the template and click **Create Stack**. Enter the stack information and template parameters for your requirements. Create and review the execution plan, then click **Deploy** after confirming the changes are as expected.
 
-See Section 4.2.1 for parameters and Section 4.2.2 for complete configuration examples. Explicitly select `node_login_method`: key mode requires `ssh_key_pair_name` and `node_password=null`; password mode requires `ssh_key_pair_name=null` and a password supplied through the platform's sensitive input. The example's `REPLACE_ME` fails validation. Supply a unique `name_prefix`, check AZs, Node/Pod CIDRs, and matching fixed-capacity AZ keys, and provide `kubernetes_version` with a valid confirmation record.
+See Section 4.2.1 for parameters and Section 4.2.2 for a deployment example based on `terraform.tfvars`. Explicitly select `node_login_method`: key mode requires `ssh_key_pair_name` and `node_password=null`; password mode requires `ssh_key_pair_name=null` and a password supplied through the platform's sensitive input. The example's `REPLACE_ME` fails validation. Supply a unique `name_prefix`, check AZs, Node/Pod CIDRs, and matching fixed-capacity AZ keys, and provide `kubernetes_version` with a valid confirmation record.
 
 Keep VKE deletion protection enabled and ALB protection disabled by default, using platform stack protection. A fresh environment using the current two-AZ example has 22 additions. If the platform separates Plan and Apply, recheck availability using the plan's same resolved inputs before Apply; inventory queries do not reserve capacity.
 
@@ -282,18 +279,7 @@ Add the third entry for three AZs. For timeouts, first check public listeners, a
 
 The `volcenginealb.com` instance hostname for ALBs created after August 1, 2025 cannot be used directly for business requests. See the [ALB domain change announcement](https://www.volcengine.com/docs/6406/1657696). For business traffic, prepare your own domain and create a CNAME pointing to `alb_dns_name` in your DNS console. Set that domain in the Ingress's `spec.rules[].host` as needed, then verify DNS and access. See [adding a CNAME record](https://www.volcengine.com/docs/6406/130777). This example configures HTTP only; HTTPS also requires a certificate and HTTPS listener.
 
-**3. Verify both egress paths.** Once the application example creates `vke-demo`, run `scripts/验证公网出口.py` on the operational host. Fill in Node/Pod EIPs from stack outputs and adjust the AZ list:
-
-```bash
-python3 scripts/验证公网出口.py \
-  --namespace vke-demo --zones cn-beijing-a cn-beijing-c \
-  --node-egress-ip "<egress.node.address>" \
-  --pod-egress-ip "<egress.pod.address>"
-```
-
-The script needs only Python 3's standard library and configured kubectl, without Terraform State or cloud AK/SK. In each AZ it sequentially creates one hostNetwork Pod and one ordinary Pod on fixed nodes. Each requests `https://checkip.amazonaws.com` and `https://api.ipify.org`; both responses must match the designated EIP. It also prints the node, hostIP, and podIP for comparison with the local Node/Pod CIDRs and NIC ownership. A hostNetwork Pod shares the Node address; an ordinary Pod uses a Pod address.
-
-Each Pod waits up to 300 seconds by default, and each curl request has a 30-second limit. Successful Pods are deleted. Repeated runs generate new names and do not overwrite applications. Exit 0 means all paths match, 1 means a runtime or verification failure, and 2 means invalid arguments. Failure or Ctrl+C retains the current Pod and prints its name. Inspect with `kubectl -n vke-demo describe pod <name>` and `kubectl -n vke-demo logs <name>`, then clean up with `kubectl -n vke-demo delete pod <name>`. For timeouts, check DNS, TLS, echo services, and Pod events before SNAT. A single external site's failure does not establish an egress configuration fault.
+**3. Verify both egress paths.** After the application example creates `vke-demo`, run the kubectl commands under "Egress check" in Section 4.2.4. Compare results with stack outputs: in every AZ, the ordinary Pod must return `egress.pod.address`, and the hostNetwork Pod must return `egress.node.address`. These commands do not require local Terraform State. The same section describes probe cleanup and troubleshooting.
 
 **4. Verify elastic nodes.** Record fixed node names and cloud instance IDs in both AZs, and the elastic node count, before adding capacity load to the example namespace:
 
@@ -392,7 +378,7 @@ Remove the `node_password` assignment from variable files before injection; same
 | `egress_bandwidth` | `10` | Mbps cap for each outbound EIP, integer 1–200 |
 | `alb_bandwidth` | `10` | Create-time inbound EIP cap, integer 1–200 Mbps; changes may replace ALB |
 | `vke_delete_protection_enabled` | `true` | Disable through a reviewed update before deletion |
-| `alb_delete_protection_enabled` | `false` | Use platform stack protection; existing protected ALBs need migration guidance |
+| `alb_delete_protection_enabled` | `false` | Use platform stack protection; follow Section 4.2.5 for existing protected ALBs |
 | `api_server_public_access_enabled` | `false` | Private API by default; arrange management controls if exposing it |
 | `addon_versions` | **Required, no default** | Prometheus, logging, NPD, and autoscaler version map |
 | `required_addons` | **Required, no default** | CoreDNS and metrics-server versions and deployment settings; only these two components are allowed |
@@ -550,10 +536,13 @@ Back up required application data and use the original deployment directory, reg
 
    In the consoles, confirm reclamation of the cluster, Workers, NICs, network, NAT/SNAT, EIPs, and ALB resources. Cluster components are reclaimed with the cluster. Existing SSH keys and the State backend are outside deletion scope. On destruction failure, retain State and inspect cloud tasks and remaining resources.
 
-## 5. Summary
+## 5. Summary and Long-term Development
 
-The template provides per-AZ fixed baseline pools, independent elastic capacity, Node/Pod egress separation, and public ALB ingress, with operational addon installation and readback. It delivers container infrastructure; applications, Ingress, HPA, logging integration, and application data remain user-managed. NPD detects node problems rather than implementing automatic repair.
+This template delivers a reproducible multi-AZ VKE foundation. Terraform manages networking and egress, fixed and elastic nodes, the ALB entry point, and basic operational components. Users configure applications, Ingress, HPA, and logging backends. The shared NAT does not provide cross-AZ failover, and the example uses HTTP. Check service specifications, versions, and billing in the target region's console.
 
-One shared NAT resides in the first Node subnet and does not provide cross-AZ NAT failover. The example entry uses HTTP, and application replica placement must be inspected. Production needs appropriate TLS, backups, capacity planning, network policies, and monitoring. Installed Prometheus/logging agents do not prove ingestion into VMP/TLS; those backends are not created here.
+Recommendations for long-term development:
 
-Regional service specifications, versions, billing, and permissions are governed by the target console and official documentation.
+- **Availability**: deploy a separate NAT per AZ, enable TLS for ingress, and add capacity planning and cross-AZ disaster recovery drills.
+- **Observability**: connect Prometheus and log collection to VMP/TLS to integrate metrics, logs, and alerts.
+- **Security governance**: add network policies, image and key management, and include fmt/validate and script unit tests in CI.
+- **Operational efficiency**: incorporate preflight, deployment, and deletion-protection steps into pipelines to reduce manual operations and state drift.

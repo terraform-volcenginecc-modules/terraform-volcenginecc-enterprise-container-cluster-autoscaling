@@ -1,6 +1,6 @@
 # 企业级容器集群自动化管理和弹性扩缩容
 
-在火山引擎账号中创建多可用区 VKE 容器底座，包括独立 VPC、Node/Pod 子网、分用途公网出口、固定与弹性节点池、运维插件和公网 ALB。当前参数示例在北京 A/C 各配置一个固定节点，弹性容量由独立节点池提供。部署完成后，通过附带的 Kubernetes 示例配置 ALB Ingress 和应用，再验证公网访问、HPA 与节点扩缩容。
+用于为企业应用搭建一套可对外服务的 VKE 容器运行底座，覆盖多可用区网络、公网出口、弹性节点容量、负载均衡和基础运维能力。部署完成后，可运行示例应用验证公网访问、HPA 自动扩缩容和节点弹性伸缩。
 
 ## 1. 业务背景
 
@@ -11,7 +11,7 @@
 - **多可用区需要实际覆盖**：配置多个子网不等于节点已经跨区，需要检查实际落区和服务可用性。
 - **Pod 与节点伸缩需要协作**：HPA 根据指标调整副本，cluster-autoscaler 根据不可调度 Pod 增加节点。
 
-本方案将这些配置纳入 Terraform 管理，同时保留云基础设施与集群内应用的管理边界。
+本方案把网络、出口、节点容量、负载均衡和运维组件统一纳入 Terraform 管理，减少手工配置带来的依赖遗漏和环境差异，实现基础设施可复现、容量可弹性扩展；同时保持云基础设施与集群内应用的管理边界清晰。
 
 ## 2. 方案概述
 
@@ -105,14 +105,11 @@ CoreDNS 和 metrics-server 由模板内的 `terraform_data + local-exec + Python
 ├── versions.tf
 ├── preflight.tf
 ├── terraform.tfvars
-├── PREFLIGHT.md
 ├── scripts/
 │   ├── preflight.py
 │   ├── apply-checked.py
 │   ├── reconcile-required-addons.py
-│   ├── bootstrap-dns.py
-│   ├── prepare-destroy.py
-│   └── 验证公网出口.py
+│   └── prepare-destroy.py
 ├── examples/
 │   ├── app.yaml
 │   ├── hpa.yaml
@@ -209,7 +206,7 @@ InfraManager 是火山引擎提供的 Terraform 托管工作台，更多产品�
 
 选择模板并点击 **创建资源栈**，根据实际需求填写资源栈信息和模板参数。创建并检查执行计划，确认变更符合预期后，点击 **执行部署**。
 
-参数说明见第 4.2.1 节，完整配置示例见第 4.2.2 节。`node_login_method` 必须显式选择：密钥模式提供 `ssh_key_pair_name` 并设置 `node_password=null`；密码模式设置 `ssh_key_pair_name=null` 并通过平台敏感输入提供密码。当前示例的 `REPLACE_ME` 不能通过校验。为独立环境设置唯一 `name_prefix`，核对可用区、Node/Pod 网段与固定容量的 AZ 键一致，并填写 `kubernetes_version` 及有效确认记录。
+参数说明见第 4.2.1 节，基于 `terraform.tfvars` 的部署示例见第 4.2.2 节。`node_login_method` 必须显式选择：密钥模式提供 `ssh_key_pair_name` 并设置 `node_password=null`；密码模式设置 `ssh_key_pair_name=null` 并通过平台敏感输入提供密码。当前示例的 `REPLACE_ME` 不能通过校验。为独立环境设置唯一 `name_prefix`，核对可用区、Node/Pod 网段与固定容量的 AZ 键一致，并填写 `kubernetes_version` 及有效确认记录。
 
 默认保持 VKE 删除保护开启、ALB 删除保护关闭，并使用平台资源栈删除保护。当前两 AZ 示例的新环境预期为 22 项新增。若平台将 Plan 和 Apply 分开执行，应在 Apply 前以计划中的同一组生效参数复查可用性；库存查询不会预留容量。
 
@@ -282,18 +279,7 @@ done
 
 2025 年 8 月 1 日后新建 ALB 的 `volcenginealb.com` 实例域名禁止直接用于业务访问，参见 [ALB 域名变更公告](https://www.volcengine.com/docs/6406/1657696)。正式业务需准备自有域名，在 DNS 控制台添加指向 `alb_dns_name` 的 CNAME，按需将该域名填写到 Ingress 的 `spec.rules[].host`，再验证解析和访问；操作参见 [添加 CNAME 记录](https://www.volcengine.com/docs/6406/130777)。本示例仅配置 HTTP，HTTPS 还需证书及 HTTPS 监听器。
 
-**3. 验证两种出口。** 应用示例创建 `vke-demo` 后，在上述运维环境运行 `scripts/验证公网出口.py`。从栈输出填写 Node/Pod EIP，并按实际可用区修改列表：
-
-```bash
-python3 scripts/验证公网出口.py \
-  --namespace vke-demo --zones cn-beijing-a cn-beijing-c \
-  --node-egress-ip "<egress.node.address>" \
-  --pod-egress-ip "<egress.pod.address>"
-```
-
-脚本只依赖 Python 3 标准库和已配置的 kubectl，不使用 Terraform State 或云 AK/SK。每区在固定节点上顺序创建一个 hostNetwork Pod 和一个普通 Pod，分别请求 `https://checkip.amazonaws.com` 与 `https://api.ipify.org`。两个回显都应匹配对应 EIP，脚本同时打印节点、hostIP 和 podIP；再对照本区 Node/Pod CIDR 与网卡归属。hostNetwork Pod 共享 Node 地址，普通 Pod 使用 Pod 地址。
-
-每个 Pod 默认等待 300 秒，两次 curl 各最多 30 秒。成功后删除该 Pod；重复运行生成新名称，不覆盖已有应用。全部匹配返回 0，运行或核对失败返回 1，参数错误返回 2。失败和 Ctrl+C 会保留当前 Pod 并打印名称，使用 `kubectl -n vke-demo describe pod <name>`、`kubectl -n vke-demo logs <name>` 排查后，用 `kubectl -n vke-demo delete pod <name>` 清理。超时先检查 DNS、TLS、回显站点和 Pod 事件，再查 SNAT；单个外部站点故障不能直接证明出口配置错误。
+**3. 验证两种出口。** 应用示例创建 `vke-demo` 后，执行第 4.2.4 节“出口检查”中的 kubectl 命令。使用资源栈输出核对结果：每个可用区的普通 Pod 应返回 `egress.pod.address`，hostNetwork Pod 应返回 `egress.node.address`。这些命令不依赖本地 Terraform State；探针清理与异常排查方法见同节。
 
 **4. 验证弹性节点。** 先记录两区固定节点名称、云实例 ID 和弹性池节点数，再对附带测试命名空间施加容量负载：
 
@@ -392,7 +378,7 @@ export TF_VAR_node_password="<your-strong-node-password>"
 | `egress_bandwidth` | `10` | 两枚出口 EIP 各自的 Mbps 上限，1–200 整数 |
 | `alb_bandwidth` | `10` | 入站 EIP 的创建期带宽，1–200 Mbps；变更可能替换 ALB |
 | `vke_delete_protection_enabled` | `true` | 销毁前通过审查后的更新关闭 |
-| `alb_delete_protection_enabled` | `false` | 默认配合平台栈保护；已开启保护的环境按迁移指南退出 |
+| `alb_delete_protection_enabled` | `false` | 默认配合平台栈保护；已开启保护的环境按第 4.2.5 节退出 |
 | `api_server_public_access_enabled` | `false` | 默认私网 API；开启公网时另行安排管理访问控制 |
 | `addon_versions` | **必填，无默认值** | Prometheus、日志、NPD、autoscaler 的版本映射 |
 | `required_addons` | **必填，无默认值** | CoreDNS、metrics-server 的版本与部署方式；仅允许这两个组件 |
@@ -550,10 +536,13 @@ curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
 
    在控制台确认集群、Worker、网卡、网络、NAT/SNAT、EIP 和 ALB 相关资源已回收。集群组件随集群删除，已有 SSH 密钥对和 State 后端不在模板删除范围。销毁失败时保留 State，先核对云端任务和残留。
 
-## 5. 总结
+## 5. 总结与长期建设
 
-本模板提供按 AZ 隔离固定基线、独立弹性节点池、Node/Pod 双出口和 ALB 应用入口，并安装和核对所需运维组件。它交付容器基础设施，应用、Ingress、HPA、日志接入和业务数据管理仍由使用者配置；NPD 检测节点问题，不等于自动修复。
+本模板交付一套可复现的多可用区 VKE 容器底座：网络与出口、固定与弹性节点、ALB 入口和基础运维组件由 Terraform 统一管理；应用、Ingress、HPA 和日志后端仍由使用者配置。共享 NAT 不提供跨 AZ 故障切换，示例入口为 HTTP，规格、版本与计费以目标地域控制台为准。
 
-一个共享 NAT 位于首个 Node 子网，不提供跨 AZ NAT 故障切换；示例入口使用 HTTP，应用副本分布也需要实际核对。生产环境应按业务需求补充 TLS、备份、容量规划、网络策略和监控告警。Prometheus、日志采集器安装成功不代表数据已进入 VMP/TLS，本模板不创建这些后端。
+长期建设建议：
 
-服务规格、版本、计费和权限以目标地域控制台及官方文档为准。
+- **可用性**：按 AZ 拆分 NAT，入口启用 TLS，并补充容量规划与跨区容灾演练。
+- **可观测性**：将 Prometheus、日志采集真正接入 VMP/TLS，形成指标、日志、告警闭环。
+- **安全治理**：补充网络策略、镜像与密钥管理，并把 fmt/validate/脚本单测纳入 CI。
+- **运维效率**：将预检、部署和销毁保护等步骤固化到流水线，减少人工操作与状态漂移。

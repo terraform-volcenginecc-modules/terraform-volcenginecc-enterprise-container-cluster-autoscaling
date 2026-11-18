@@ -20,5 +20,5 @@ resource "volcenginecc_alb_load_balancer" "this" {
   # optional computed children in this create-only object become unknown.
   # Even ignore_changes does not fix that provider plan. Use the guarded
   # scripts/prepare-destroy.py exit procedure; do not apply a replacement
-  # merely to disable protection. See docs/REMEDIATION.zh-CN.md.
+  # merely to disable protection.
 }

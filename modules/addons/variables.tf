@@ -7,7 +7,7 @@ variable "region" {
   type        = string
 }
 variable "addon_versions" {
-  description = "Queried component versions; absent keys use service defaults."
+  description = "Explicit component versions validated by deployment preflight."
   type        = map(string)
 }
 variable "required_addons" {
