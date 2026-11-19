@@ -1,0 +1,31 @@
+# Select only the elastic pool and request one CPU per Pod.
+# Increase replicas until total requests exceed currently allocatable CPU.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-scale-test
+  namespace: vke-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-scale-test
+  template:
+    metadata:
+      labels:
+        app: node-scale-test
+    spec:
+      nodeSelector:
+        workload-pool: elastic
+      containers:
+        - name: sleeper
+          # Replace with an approved image reachable from the Pod subnet.
+          image: public.ecr.aws/docker/library/busybox:1.37
+          command: ["sh", "-c", "sleep 86400"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 128Mi
